@@ -276,7 +276,7 @@ Specifically the last 2/3 lines. How on earth does that work? We know writing to
 
 This is, in all actuality pretty easy to explain. Take a look at this diagram:
 
-![Socket/Client diagram](https://www.cs.uregina.ca/Links/class-info/330/Sockets/server-client.png)
+![Socket/Client diagram](../assets/img/server-client.png)
 
 [here](https://www.cs.uregina.ca/Links/class-info/330/Sockets/sockets.html)
 
