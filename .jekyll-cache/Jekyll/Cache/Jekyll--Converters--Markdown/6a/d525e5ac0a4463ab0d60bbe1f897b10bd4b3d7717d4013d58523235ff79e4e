@@ -1,0 +1,317 @@
+I"�|
+<h1 id="intro">Intro</h1>
+
+<p>So <a href="https://ctftime.org/event/1382">IJCTF</a> happened recently, taking place over the weekend from the 24th of June. It had some pretty damn good challenges, and was a great way for me and the rest of <a href="https://ctftime.org/team/116018">zh3r0</a> to rejuvenate after being battered by the hellhole that was google CTF. So lets get into one of these challenges.</p>
+
+<p><code class="language-plaintext highlighter-rouge">memory-heist</code> specifically was solved by my team-mate. His solution was quite baffling at first but after debugging and running through it a few times I understood. This is the exploit I will be using (and explaining) during this writeup, so I hope it can help you understand the awesome way this was exploited.</p>
+
+<p>As usual, the exploit script is in the folder with this writeup (if this ends up on GitHub, anyway]). So if that’s all you need, there it is.</p>
+
+<p>With that out of the way, lets take a look at the challenge binary.</p>
+
+<h2 id="setup">Setup</h2>
+
+<p>… But before we can do that there is a problem. Stripped libc. If you don’t mind not having access to <code class="language-plaintext highlighter-rouge">pwndbg</code>s <code class="language-plaintext highlighter-rouge">heap</code> command for looking at heap chunks, you can skip this part, but this is gonna get pretty technical so I would recommend following. You can get the debug symbols by running:</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code>wget http://es.archive.ubuntu.com/ubuntu/pool/main/g/glibc/libc6-dbg_2.31-0ubuntu9.2_amd64.deb
+</code></pre></div></div>
+
+<p>And then</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code>dpkg <span class="nt">-x</span> libc6-dbg_2.31-0ubuntu9.2_amd64.deb <span class="nb">.</span>
+</code></pre></div></div>
+
+<p>To extract them to the current directory. Next I used <code class="language-plaintext highlighter-rouge">eu-unstrip</code> to copy the debug symbols from the unstripped libc, over to the stripped one provided, alternatively you could just replace the libc, but I only thought of that now -_-.</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code>eu-unstrip ./libc.so.6 usr/lib/debug/lib/x86_64-linux-gnu/libc-2.31.so <span class="nt">-o</span> ./libc.so.6.dbg
+</code></pre></div></div>
+
+<p>Now you should have <code class="language-plaintext highlighter-rouge">libc.so.6.dbg</code> which you can exchange with the provided libc as you wish. No need for any patching because the challenge creator’s had the foresight to load the linker AND libc from the current directory. Thanks guys.</p>
+
+<h1 id="what">What</h1>
+
+<p>First, lets see the challenge description:</p>
+
+<p><code class="language-plaintext highlighter-rouge">Hereee! You got both printf() and UAF. Lets see if you can get the flag :)</code></p>
+
+<p>Very bold… Lets see about that.</p>
+
+<p>Now that we have that out of the way we can take a look at how the binary runs, and see what it does, then we can delve in with the disassembler/de-compiler of your choice. First lets run and explore some program functionality:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>root@nomu:~/D/I/memory_heist
+❯❯ ./memory-heist                                                                                                                    
+
+Welcome to Memory Heist.
+
+1. Allocate
+2. Delete
+3. Print
+&gt; 1
+Enter the index for memory.
+&gt; 0
+Enter the size of memory.
+&gt; 1337
+Memory&gt; asdfasdfasdf
+Saved.
+1. Allocate
+2. Delete
+3. Print
+&gt; 3
+Re-visting memories comes at a cost.
+Should you choose to accept to re-visit, half of your memories will be lost.
+[Y/N]&gt; Y
+Index&gt; 0
+Contents:asdfasdfasdf1. Allocate
+2. Delete
+3. Print
+&gt;
+1. Allocate
+2. Delete
+3. Print
+&gt; 2
+Enter the index.
+&gt; 0
+Done.
+  [--snipped--]
+fish: “./memory-heist” terminated by signal SIGALRM (Timer expired)
+
+</code></pre></div></div>
+
+<p>So we have 3 options: “Allocate”, “Delete”, and “Print”. “Allocate” asks for an index, then a size, and then the contents. We can then “Print” the contents given an index. And finally we can “Delete” once done. Were also rudely interrupted by an <code class="language-plaintext highlighter-rouge">alarm()</code>, so were definitely not meant to do this manually, huh.</p>
+
+<p>This looks like a pretty standard heap note challenge; we can allocate some space that we control at will, fill it with data which we also control, and then free/delete said allocation once done.</p>
+
+<p>So lets take a look at our program in IDA/Ghidra to confirm or deny this hypothesis.</p>
+
+<h1 id="reversing">Reversing</h1>
+<h2 id="main">main()</h2>
+
+<p>Since the binary is pretty small its feasible to walk through the binary one function at a time, so lets see what’s up:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="kr">__cdecl</span> <span class="n">__noreturn</span> <span class="nf">main</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="k">const</span> <span class="kt">char</span> <span class="o">**</span><span class="n">argv</span><span class="p">,</span> <span class="k">const</span> <span class="kt">char</span> <span class="o">**</span><span class="n">envp</span><span class="p">)</span>
+<span class="p">{</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">choice</span><span class="p">;</span> <span class="c1">// [rsp+8h] [rbp-8h]</span>
+
+  <span class="n">welcome</span><span class="p">();</span>
+  <span class="k">while</span> <span class="p">(</span> <span class="mi">1</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="k">while</span> <span class="p">(</span> <span class="mi">1</span> <span class="p">)</span>
+    <span class="p">{</span>
+      <span class="n">choice</span> <span class="o">=</span> <span class="n">menu</span><span class="p">(</span><span class="n">argc</span><span class="p">,</span> <span class="n">argv</span><span class="p">);</span>
+      <span class="k">if</span> <span class="p">(</span> <span class="n">choice</span> <span class="o">!=</span> <span class="mi">3</span> <span class="p">)</span>
+        <span class="k">break</span><span class="p">;</span>
+      <span class="n">print</span><span class="p">();</span>
+    <span class="p">}</span>
+    <span class="k">if</span> <span class="p">(</span> <span class="n">choice</span> <span class="o">&gt;</span> <span class="mi">3</span> <span class="p">)</span>
+      <span class="k">break</span><span class="p">;</span>
+    <span class="k">if</span> <span class="p">(</span> <span class="n">choice</span> <span class="o">==</span> <span class="mi">1</span> <span class="p">)</span>
+    <span class="p">{</span>
+      <span class="n">allocate</span><span class="p">();</span>
+    <span class="p">}</span>
+    <span class="k">else</span>
+    <span class="p">{</span>
+      <span class="k">if</span> <span class="p">(</span> <span class="n">choice</span> <span class="o">!=</span> <span class="mi">2</span> <span class="p">)</span>
+        <span class="k">break</span><span class="p">;</span>
+      <span class="n">delete</span><span class="p">();</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Duh!"</span><span class="p">);</span>
+  <span class="n">_exit</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Okay, so first we call a function <code class="language-plaintext highlighter-rouge">welcome()</code>. This is pretty simple, just give us a welcome message, and setup a semi-random <code class="language-plaintext highlighter-rouge">alarm()</code> timer:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="nf">welcome</span><span class="p">()</span>
+<span class="p">{</span>
+  <span class="kt">int</span> <span class="n">lol</span><span class="p">;</span> <span class="c1">// eax</span>
+
+  <span class="n">lol</span> <span class="o">=</span> <span class="n">rand</span><span class="p">();</span>
+  <span class="n">alarm</span><span class="p">(</span><span class="n">lol</span> <span class="o">%</span> <span class="mi">1337</span> <span class="o">/</span> <span class="mi">20</span><span class="p">);</span>
+  <span class="k">return</span> <span class="n">puts</span><span class="p">(</span><span class="s">"</span><span class="se">\n</span><span class="s">Welcome to Memory Heist.</span><span class="se">\n</span><span class="s">"</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>So that’s why we get kicked out almost immediately. Next we enter a command loop from which we enter our choice:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">while</span> <span class="p">(</span> <span class="mi">1</span> <span class="p">)</span>
+<span class="p">{</span>
+  <span class="k">while</span> <span class="p">(</span> <span class="mi">1</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="n">choice</span> <span class="o">=</span> <span class="n">menu</span><span class="p">(</span><span class="n">argc</span><span class="p">,</span> <span class="n">argv</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span> <span class="n">choice</span> <span class="o">!=</span> <span class="mi">3</span> <span class="p">)</span>
+      <span class="k">break</span><span class="p">;</span>
+    <span class="n">print</span><span class="p">();</span>
+  <span class="p">}</span>
+  <span class="k">if</span> <span class="p">(</span> <span class="n">choice</span> <span class="o">&gt;</span> <span class="mi">3</span> <span class="p">)</span>
+    <span class="k">break</span><span class="p">;</span>
+  <span class="k">if</span> <span class="p">(</span> <span class="n">choice</span> <span class="o">==</span> <span class="mi">1</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="n">allocate</span><span class="p">();</span>
+  <span class="p">}</span>
+  <span class="k">else</span>
+  <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span> <span class="n">choice</span> <span class="o">!=</span> <span class="mi">2</span> <span class="p">)</span>
+      <span class="k">break</span><span class="p">;</span>
+    <span class="n">delete</span><span class="p">();</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>The first thing we do inside the loop is call <code class="language-plaintext highlighter-rouge">menu()</code> to display our options banner, then take said option, and return it:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">__int64</span> <span class="nf">menu</span><span class="p">()</span>
+<span class="p">{</span>
+  <span class="n">__int64</span> <span class="n">choice</span><span class="p">[</span><span class="mi">2</span><span class="p">];</span> <span class="c1">// [rsp+0h] [rbp-10h] BYREF</span>
+
+  <span class="n">choice</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">__readfsqword</span><span class="p">(</span><span class="mh">0x28u</span><span class="p">);</span>
+  <span class="n">choice</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mi">0LL</span><span class="p">;</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"1. Allocate"</span><span class="p">);</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"2. Delete"</span><span class="p">);</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"3. Print"</span><span class="p">);</span>
+  <span class="n">printf</span><span class="p">(</span><span class="s">"&gt; "</span><span class="p">);</span>
+  <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%lu"</span><span class="p">,</span> <span class="n">choice</span><span class="p">);</span>
+  <span class="k">return</span> <span class="n">choice</span><span class="p">[</span><span class="mi">0</span><span class="p">];</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Back in the main command loop, we have branches for each corresponding option, and if we do not have any of these as our choice we leave the command loop and <code class="language-plaintext highlighter-rouge">exit()</code>.</p>
+
+<p>Firstly, lets take a look at <code class="language-plaintext highlighter-rouge">allocate()</code>:</p>
+
+<h2 id="allocate">allocate()</h2>
+
+<p>We can already see some recognizable strings:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">unsigned</span> <span class="n">__int64</span> <span class="nf">allocate</span><span class="p">()</span>
+<span class="p">{</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">idx_dup</span><span class="p">;</span> <span class="c1">// rbx</span>
+  <span class="kt">size_t</span> <span class="n">nbytes</span><span class="p">;</span> <span class="c1">// [rsp+8h] [rbp-28h] BYREF</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">idx</span><span class="p">;</span> <span class="c1">// [rsp+10h] [rbp-20h] BYREF</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">canary</span><span class="p">;</span> <span class="c1">// [rsp+18h] [rbp-18h]</span>
+
+  <span class="n">canary</span> <span class="o">=</span> <span class="n">__readfsqword</span><span class="p">(</span><span class="mh">0x28u</span><span class="p">);</span>
+  <span class="n">nbytes</span> <span class="o">=</span> <span class="mi">0LL</span><span class="p">;</span>
+  <span class="n">idx</span> <span class="o">=</span> <span class="mi">0LL</span><span class="p">;</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Enter the index for memory."</span><span class="p">);</span>
+  <span class="n">printf</span><span class="p">(</span><span class="s">"&gt; "</span><span class="p">);</span>
+  <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%lu"</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">idx</span><span class="p">);</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Enter the size of memory."</span><span class="p">);</span>
+  <span class="n">printf</span><span class="p">(</span><span class="s">"&gt; "</span><span class="p">);</span>
+  <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%lu"</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">nbytes</span><span class="p">);</span>
+  <span class="k">if</span> <span class="p">(</span> <span class="n">idx</span> <span class="o">&gt;</span> <span class="mh">0xB</span> <span class="o">||</span> <span class="p">(</span><span class="o">&amp;</span><span class="n">chunks</span><span class="p">)[</span><span class="n">idx</span><span class="p">]</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"Duh!"</span><span class="p">);</span>
+    <span class="n">_exit</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+  <span class="p">}</span>
+  <span class="n">idx_dup</span> <span class="o">=</span> <span class="n">idx</span><span class="p">;</span>
+  <span class="p">(</span><span class="o">&amp;</span><span class="n">chunks</span><span class="p">)[</span><span class="n">idx_dup</span><span class="p">]</span> <span class="o">=</span> <span class="n">malloc</span><span class="p">(</span><span class="n">nbytes</span> <span class="o">+</span> <span class="mi">2</span><span class="p">);</span>
+  <span class="n">printf</span><span class="p">(</span><span class="s">"Memory&gt; "</span><span class="p">);</span>
+  <span class="n">nbytes</span> <span class="o">=</span> <span class="n">read</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mh">0x4100</span><span class="p">,</span> <span class="n">nbytes</span><span class="p">);</span>
+  <span class="o">*</span><span class="p">(</span><span class="o">&amp;</span><span class="n">chunks</span> <span class="o">+</span> <span class="n">nbytes</span> <span class="o">+</span> <span class="mi">159</span><span class="p">)</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+  <span class="n">memcpy</span><span class="p">((</span><span class="o">&amp;</span><span class="n">chunks</span><span class="p">)[</span><span class="n">idx</span><span class="p">],</span> <span class="mh">0x4100</span><span class="p">,</span> <span class="n">nbytes</span><span class="p">);</span>       <span class="c1">// smash &amp;chunks + idx?</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Saved."</span><span class="p">);</span>
+  <span class="k">return</span> <span class="n">__readfsqword</span><span class="p">(</span><span class="mh">0x28u</span><span class="p">)</span> <span class="o">^</span> <span class="n">canary</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>So, looks like how we would expect; we enter <code class="language-plaintext highlighter-rouge">idx</code>, <code class="language-plaintext highlighter-rouge">nbytes</code> and then input contents, although the way contents is received is a little strange; first data is read from stdin into <code class="language-plaintext highlighter-rouge">.bss</code> rather than first <code class="language-plaintext highlighter-rouge">malloc()</code>ing a chunk of size <code class="language-plaintext highlighter-rouge">nbytes</code> and THEN reading data in from there. Doing it this way allows us to write as much data into <code class="language-plaintext highlighter-rouge">.bss</code> as we want, and although there’s nothing interesting you could do with this its still a little strange.</p>
+
+<p>Anyway, if our <code class="language-plaintext highlighter-rouge">idx</code> doesn’t stray OOB, and the current slot is not occupied we are able to store our allocated memory there, our input is then read into + copied from <code class="language-plaintext highlighter-rouge">.bss</code> to our allocation after first being null terminated (I’m sort of sure that’s what <code class="language-plaintext highlighter-rouge">*(&amp;chunks + nbytes + 159) = 0;</code> is doing, anyway).</p>
+
+<p>So summed up, <code class="language-plaintext highlighter-rouge">allocate()</code> does a couple things:</p>
+<ul>
+  <li>Take <code class="language-plaintext highlighter-rouge">idx</code>, <code class="language-plaintext highlighter-rouge">nbytes</code>, and chunk Contents.</li>
+  <li>Verify our <code class="language-plaintext highlighter-rouge">idx</code> does not go OOB and that we aren’t replacing an allocation which is in use.</li>
+  <li>If we abide by the rules above, copy our contents into our <code class="language-plaintext highlighter-rouge">allocation</code>.</li>
+</ul>
+
+<p>Lets move on to the next function, <code class="language-plaintext highlighter-rouge">print()</code>.</p>
+
+<h2 id="print">print()</h2>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">unsigned</span> <span class="n">__int64</span> <span class="nf">print</span><span class="p">()</span>
+<span class="p">{</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">idx1</span><span class="p">;</span> <span class="c1">// [rsp+8h] [rbp-28h] BYREF</span>
+  <span class="n">__int64</span> <span class="n">isPCT</span><span class="p">;</span> <span class="c1">// [rsp+10h] [rbp-20h]</span>
+  <span class="kt">char</span> <span class="o">*</span><span class="n">chr</span><span class="p">;</span> <span class="c1">// [rsp+18h] [rbp-18h]</span>
+  <span class="kt">char</span> <span class="n">buf</span><span class="p">[</span><span class="mi">8</span><span class="p">];</span> <span class="c1">// [rsp+20h] [rbp-10h] BYREF</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">canary</span><span class="p">;</span> <span class="c1">// [rsp+28h] [rbp-8h]</span>
+
+  <span class="n">canary</span> <span class="o">=</span> <span class="n">__readfsqword</span><span class="p">(</span><span class="mh">0x28u</span><span class="p">);</span>
+  <span class="n">chr</span> <span class="o">=</span> <span class="mi">0LL</span><span class="p">;</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Re-visting memories comes at a cost."</span><span class="p">);</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Should you choose to accept to re-visit, half of your memories will be lost."</span><span class="p">);</span>
+  <span class="n">printf</span><span class="p">(</span><span class="s">"[Y/N]&gt; "</span><span class="p">);</span>
+  <span class="n">read</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">buf</span><span class="p">,</span> <span class="mi">6uLL</span><span class="p">);</span>
+  <span class="k">if</span> <span class="p">(</span> <span class="n">buf</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="sc">'N'</span> <span class="o">||</span> <span class="n">buf</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="sc">'n'</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"Thats alright."</span><span class="p">);</span>
+  <span class="p">}</span>
+  <span class="k">else</span>
+  <span class="p">{</span>
+    <span class="n">printf</span><span class="p">(</span><span class="s">"Index&gt; "</span><span class="p">);</span>
+    <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%lu"</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">idx1</span><span class="p">);</span>               <span class="c1">// idx not checked here</span>
+    <span class="n">chr</span> <span class="o">=</span> <span class="o">*</span><span class="p">(</span><span class="o">&amp;</span><span class="n">chunks</span> <span class="o">+</span> <span class="n">idx1</span><span class="p">);</span>                    <span class="c1">// uaf here</span>
+    <span class="n">isPCT</span> <span class="o">=</span> <span class="mi">0LL</span><span class="p">;</span>
+    <span class="k">while</span> <span class="p">(</span> <span class="o">*</span><span class="n">chr</span> <span class="p">)</span>
+    <span class="p">{</span>
+      <span class="k">if</span> <span class="p">(</span> <span class="o">*</span><span class="n">chr</span> <span class="o">==</span> <span class="sc">'%'</span> <span class="p">)</span>
+        <span class="n">isPCT</span> <span class="o">=</span> <span class="mi">1LL</span><span class="p">;</span>
+      <span class="k">if</span> <span class="p">(</span> <span class="n">isPCT</span> <span class="o">&amp;&amp;</span> <span class="o">*</span><span class="n">chr</span> <span class="o">==</span> <span class="sc">'n'</span> <span class="p">)</span>
+      <span class="p">{</span>
+        <span class="n">puts</span><span class="p">(</span><span class="s">"Whoaa! Whatcha doin'?"</span><span class="p">);</span>
+        <span class="n">_exit</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+      <span class="p">}</span>
+      <span class="o">++</span><span class="n">chr</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="n">printf</span><span class="p">(</span><span class="s">"Contents:"</span><span class="p">);</span>
+    <span class="n">printf</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="o">&amp;</span><span class="n">chunks</span> <span class="o">+</span> <span class="n">idx1</span><span class="p">));</span>                  <span class="c1">// fmt string vuln</span>
+    <span class="k">for</span> <span class="p">(</span> <span class="n">idx1</span> <span class="o">&amp;=</span> <span class="mi">1u</span><span class="p">;</span> <span class="n">idx1</span> <span class="o">&lt;=</span> <span class="mh">0xB</span><span class="p">;</span> <span class="n">idx1</span> <span class="o">+=</span> <span class="mi">2LL</span> <span class="p">)</span>
+      <span class="o">*</span><span class="p">(</span><span class="o">&amp;</span><span class="n">chunks</span> <span class="o">+</span> <span class="n">idx1</span><span class="p">)</span> <span class="o">=</span> <span class="err">'</span><span class="n">Timaohw</span><span class="err">'</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="n">__readfsqword</span><span class="p">(</span><span class="mh">0x28u</span><span class="p">)</span> <span class="o">^</span> <span class="n">canary</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>We print the all too familiar prompt, then ask for a choice, <code class="language-plaintext highlighter-rouge">[Y/N]</code>. Choosing <code class="language-plaintext highlighter-rouge">N</code>/<code class="language-plaintext highlighter-rouge">n</code> simply returns us to the command loop, but any other char will take us forward.</p>
+
+<p>We read an <code class="language-plaintext highlighter-rouge">idx</code>. Interestingly enough (though not relevant for our exploit) is that said <code class="language-plaintext highlighter-rouge">idx</code> is not checked for OOB. I’m not sure if this is a feature of the challenge for not, but this allows you to specify an arbitrary <code class="language-plaintext highlighter-rouge">idx</code> which will then be printed from.</p>
+
+<p>Next we get the corresponding pointer for the given <code class="language-plaintext highlighter-rouge">idx</code> and iterate through the contents of our chunk, if we give <code class="language-plaintext highlighter-rouge">%n</code> as part of our buffer during <code class="language-plaintext highlighter-rouge">allocate()</code>, we will exit the program upon detecting that (format string incoming).</p>
+
+<p>After this we pass our chunk contents directly into <code class="language-plaintext highlighter-rouge">printf</code>. Here is our format string bug, like the challenge description promised - but with the constraint that no <code class="language-plaintext highlighter-rouge">%n</code> is allowed, so no writing memory using this. Like promised at the start of the program, we will now lose half of our <code class="language-plaintext highlighter-rouge">memories</code>, in this case being our chunks. The string “whoamIT” will be written to half of our chunk slots, making them effectively useless.</p>
+
+<p>Once placed here, these cannot be cleared, which means we cant use these slots for any more allocations, and we certainly cant free/delete them, as we will see soon.</p>
+
+<p>Anyhow, we then check the canary and are returned to our command loop, but this time with serious <code class="language-plaintext highlighter-rouge">amnesia</code>… Haha geddit? Because memories?????? Okay I’ll stop.</p>
+
+<h2 id="delete">delete()</h2>
+
+<p>Finally we come to the crux of the issue, and arguably the most important function in our program. We come to the UAF:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">unsigned</span> <span class="n">__int64</span> <span class="nf">delete</span><span class="p">()</span>
+<span class="p">{</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">v1</span><span class="p">;</span> <span class="c1">// [rsp+0h] [rbp-10h] BYREF</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">v2</span><span class="p">;</span> <span class="c1">// [rsp+8h] [rbp-8h]</span>
+
+  <span class="n">v2</span> <span class="o">=</span> <span class="n">__readfsqword</span><span class="p">(</span><span class="mh">0x28u</span><span class="p">);</span>
+  <span class="n">v1</span> <span class="o">=</span> <span class="mi">0LL</span><span class="p">;</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Enter the index."</span><span class="p">);</span>
+  <span class="n">printf</span><span class="p">(</span><span class="s">"&gt; "</span><span class="p">);</span>
+  <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%lu"</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">v1</span><span class="p">);</span>
+  <span class="k">if</span> <span class="p">(</span> <span class="n">v1</span> <span class="o">&gt;</span> <span class="mh">0xB</span> <span class="o">||</span> <span class="o">!*</span><span class="p">(</span><span class="o">&amp;</span><span class="n">chunks</span> <span class="o">+</span> <span class="n">v1</span><span class="p">)</span> <span class="o">||</span> <span class="o">*</span><span class="n">free_hook</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"Duh!"</span><span class="p">);</span>
+    <span class="n">_exit</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+  <span class="p">}</span>
+  <span class="n">free</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="o">&amp;</span><span class="n">chunks</span> <span class="o">+</span> <span class="n">v1</span><span class="p">));</span>                        <span class="c1">// free'd, but not cleared. ALSO not checked if freed previously</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Done."</span><span class="p">);</span>
+  <span class="k">return</span> <span class="n">__readfsqword</span><span class="p">(</span><span class="mh">0x28u</span><span class="p">)</span> <span class="o">^</span> <span class="n">v2</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>This function is pretty small, and all it does is validate, again that we don’t go OOB, then <code class="language-plaintext highlighter-rouge">free()</code>s a chunk in a given <code class="language-plaintext highlighter-rouge">idx</code> slot. It also checks if the <code class="language-plaintext highlighter-rouge">__free_hook</code> has been overwritten, and this is something we will need to bypass later.</p>
+
+<p>You may notice a couple things, and if you have props to you, because I didn’t see this until very, very late in the CTF. We do not check the validity of any pointer we <code class="language-plaintext highlighter-rouge">free()</code>. This, combined with the fact that <code class="language-plaintext highlighter-rouge">free()</code>d chunks are never cleared could allow us to free a chunk twice. During the period between when it was last <code class="language-plaintext highlighter-rouge">free()</code>d we could have replaced crucial chunk metadata such as the size. This is what our exploit abuses.</p>
+:ET

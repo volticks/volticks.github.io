@@ -1,0 +1,123 @@
+I"�<h1 id="intro">Intro</h1>
+
+<p>Heres the second one.</p>
+
+<h2 id="description">Description</h2>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125590627-6d60c007-9e4e-4a5d-9164-49e7fa3828e5.png" alt="image" /></p>
+
+<p>Oddly enough I solved this challenge before <code class="language-plaintext highlighter-rouge">simultaneity</code>, despite this having less solves overall, probably due to its complexity. The description would suggest some 
+sort of image parser (of course the name is <code class="language-plaintext highlighter-rouge">image-identifier</code>). So lets run it and see.</p>
+
+<p>We are given a <code class="language-plaintext highlighter-rouge">Dockerfile</code> and a binary, <code class="language-plaintext highlighter-rouge">chal</code>. No libc this time so no need for any patching shenanigans. If we run <code class="language-plaintext highlighter-rouge">checksec</code> (like i forgot for <code class="language-plaintext highlighter-rouge">simultaneity</code>) we 
+can see what our options will be:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125593030-b4bd38d7-8651-4af7-9a87-cb552b662bfc.png" alt="image" /></p>
+
+<p>So PIE is off, and no libc is provided. That combined with having only Partial Relro means that the intended solution probably involves calling/overwriting some function
+in the binary/Global Offset Table. If we run the program:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125593519-98e1de93-afd6-461e-83d1-5c52d68f1a82.png" alt="image" /></p>
+
+<p>We can see it asks for the size of our image file. Upon supplying a size we can then supply our image content. Supplying some junk, predictably does nothing but make the
+program complain about <code class="language-plaintext highlighter-rouge">unidentifiable format</code>, then exits. It seems we won’t be able to fully explore the program functionality unless we understand how to make an image
+with an identifiable format, so lets crack it open in ghidra.</p>
+
+<h1 id="reversing">Reversing</h1>
+
+<p>Thankfully the file isn’t stripped (its a pwn challenge, not rev thank god) so we can still maintain some semblence of sanity. So whats in <code class="language-plaintext highlighter-rouge">main()</code>? Quite alot when 
+compared to <code class="language-plaintext highlighter-rouge">simultaneity</code> (cant take a screenshot bcuz its too big, will just dump the code here):</p>
+
+<p>```c
+undefined8 main(void)</p>
+
+<p>{
+  int retval;
+  long in_FS_OFFSET;
+  char yes_no;
+  int image_length;
+  undefined4 invert_image_colours;
+  int img_type;
+  void *image_alloc;
+  code **image_fops;
+  long cookie;</p>
+
+<p>cookie = <em>(long *)(in_FS_OFFSET + 0x28);
+                      /</em> setup buffering for lil old me awww <em>/
+  setbuf(stdout,(char *)0x0);
+  setbuf(stdin,(char *)0x0);
+  setbuf(stderr,(char *)0x0);
+  puts(“welcome to the image identifier service\n”);
+  puts(“How large is your file?\n”);
+  retval = __isoc99_scanf(“%d”,&amp;image_length);
+  if (retval != 1) {
+                      /</em> supposedly ‘invalid’ file size but doesn’t bail out :) <em>/
+    puts(“invalid file size”);
+  }
+                      /</em> malloc will return ‘0’ if it fails (aka, size too big). However this doesn’t
+                         help us, AT ALL. <em>/
+  image_alloc = malloc((long)image_length);
+  getchar();
+  image_fops = (code <strong>)malloc(0x18);
+  puts(“please send your image here:\n”);
+  fread(image_alloc,(long)image_length,1,stdin);
+                      /* read from the start of our input/image to determine the type of image. From
+                         here different fops will be used for each image type. */
+  img_type = validateHeader(image_alloc);
+                      /* No checks happen on the chunks/footer if we use bmp. Because the functions
+                         are basically nops LMFAO. :( just realised my dumbass didn’t see that they
+                         just exit() immediately. */
+  if (img_type == 1) {
+    *image_fops = bmpHeadValidate;
+    image_fops[1] = bmpChunkValidate;
+    image_fops[2] = bmpFooterValidate;
+  }
+  else {
+    if (img_type != 2) {
+      puts(“unidentifiable format”);
+                      /* WARNING: Subroutine does not return */
+      exit(1);
+    }
+                      /* However if we have the mis-fortune to use png, there are a myriad of checks
+                         and fucky shit we have to do to get a valid file produced. */
+    *image_fops = pngHeadValidate;
+    image_fops[1] = pngChunkValidate;
+    image_fops[2] = pngFooterValidate;
+  }
+                      /* generates a 256 byte-long sequence */
+  make_crc_table();
+                      /* ghidra fucked up the args. This will either be bmpHeadValidate() or
+                         pngHeadValidate(). */
+  retval = (</strong>image_fops)(image_alloc,image_length,image_length,</em>image_fops);
+                      /* if the above is sucessful, we can increment image_alloc by 33 bytes. If our
+                         allocation is smaller that that, we can write out of bounds n shit <em>/
+  if (retval == 0) {
+    puts(“valid header, processing chunks”);
+                      /</em> Offset can be added to quite a bit, and if your allocation is only 16
+                         bytes (minimum) this may be incremented out of bounds, and into the
+                         image_fops array… Interesting… <em>/
+    image_alloc = (void *)((long)image_alloc + (long)offset);
+    invert_image_colours = 0;
+    puts(“do you want to invert the colors?”);
+    retval = __isoc99_scanf(“%c”,&amp;yes_no);
+    if ((retval == 1) &amp;&amp; (yes_no == ‘y’)) {
+      invert_image_colours = 1;
+    }
+    while ((ended == 0 &amp;&amp; ((long)image_alloc &lt; (long)image_fops))) {
+                      /</em> until there are no chunks left to check. Also check that image_alloc doesn’t
+                         get incremented out of bounds (but what if it already has been ;) ). <em>/
+      image_alloc = (void *)(</em>image_fops[1])(image_alloc,invert_image_colours,invert_image_colours,
+                                                   image_fops[1]);
+    }
+    (<em>image_fops[2])(image_alloc);
+    puts(“congrats this is a great picture”);
+    if (cookie != *(long *)(in_FS_OFFSET + 0x28)) {
+                      /</em> WARNING: Subroutine does not return <em>/
+      __stack_chk_fail();
+    }
+    return 0;
+  }
+                      /</em> WARNING: Subroutine does not return */
+  exit(1);
+}</p>
+:ET

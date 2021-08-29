@@ -1,0 +1,154 @@
+I"�6<h1 id="intro">Intro</h1>
+
+<p>This writeup is pretty late, given that <a href="https://ctftime.org/event/1372">UIUCTC 21</a> ended a good few days ago, but now its here.</p>
+
+<p>This was a first for me, and for my team-mate <a href="https://twitter.com/X3eRo0/">X3eRo0</a>; a kernel challenge in a live CTF environment. Although we both finished the kernel section of <a href="https://pwn.college/">pwn.college</a> this was a little different, as you’ll see.</p>
+
+<h2 id="pre-requisites">Pre-requisites</h2>
+
+<p>This writeup assumes that the reader knows what <code class="language-plaintext highlighter-rouge">seccomp</code> is, and what it does along with how it does it. If you don’t, reading through the <a href="https://man7.org/linux/man-pages/man2/seccomp.2.html">man page</a> a little will help with that understanding.</p>
+
+<h2 id="what">What</h2>
+
+<p>The challenge gives us links to a <code class="language-plaintext highlighter-rouge">handout.tar.gz</code> and <code class="language-plaintext highlighter-rouge">starter.c</code>. On extracting the handout, we are greeted with a <code class="language-plaintext highlighter-rouge">challenge</code> folder, and inside that folder are the following files:</p>
+
+<p>` Dockerfile  kernel/  nsjail.cfg  src/ `</p>
+
+<p>We are given a <code class="language-plaintext highlighter-rouge">Dockerfile</code>, <code class="language-plaintext highlighter-rouge">kernel/</code> directory, an nsjail configuration file and a <code class="language-plaintext highlighter-rouge">src/</code> folder. Building this in docker takes a long time, and quite a lot of disk space so if you want to you can skip that process completely and just use:</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nb">stty </span>raw <span class="nt">-echo</span><span class="p">;</span> nc insecure-seccomp.chal.uiuc.tf 1337<span class="p">;</span> <span class="nb">stty</span> <span class="nt">-raw</span> <span class="nb">echo</span>
+</code></pre></div></div>
+
+<p>To connect to the remote service, IF its still up, that is. Anyway, looking in the dockerfile we can get some details about our challenge before even reading the source, in particular:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>COPY kernel/kconfig /kernel/linux-5.12.14/.config
+COPY kernel/patch /tmp/kernel.patch
+COPY kernel/CVE-2021-33909.patch /tmp/CVE-2021-33909.patch
+RUN patch -p1 -d /kernel/linux-5.12.14 &lt; /tmp/CVE-2021-33909.patch
+RUN patch -p1 -d /kernel/linux-5.12.14 &lt; /tmp/kernel.patch
+</code></pre></div></div>
+
+<p>Here we can see the some files, such as the <code class="language-plaintext highlighter-rouge">kconfig</code> which contains flags and build instructions for our kernel, and 2 other files, <code class="language-plaintext highlighter-rouge">patch</code> and <code class="language-plaintext highlighter-rouge">CVE-2021-33909.patch</code>. The latter provides a fix for a recent CVE, and is not relevant on our end, however the former is a bit more interesting:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>diff --git a/init/main.c b/init/main.c                                                                                               
+index 5bd1a25f1d6f..ee7dc4a65c08 100644
+--- a/init/main.c
++++ b/init/main.c
+@@ -1490,7 +1490,7 @@ void __init console_on_rootfs(void)
+        struct file *file = filp_open("/dev/console", O_RDWR, 0);
+
+        if (IS_ERR(file)) {
+-               pr_err("Warning: unable to open an initial console.\n");
++               // pr_err("Warning: unable to open an initial console.\n");
+                return;
+        }
+        init_dup(file);
+diff --git a/kernel/seccomp.c b/kernel/seccomp.c
+index 93684cc63285..e8574297803c 100644
+--- a/kernel/seccomp.c
++++ b/kernel/seccomp.c
+@@ -648,9 +648,9 @@ static struct seccomp_filter *seccomp_prepare_filter(struct sock_fprog *fprog)
+         * This avoids scenarios where unprivileged tasks can affect the
+         * behavior of privileged children.
+         */
+-       if (!task_no_new_privs(current) &amp;&amp;
+-                       !ns_capable_noaudit(current_user_ns(), CAP_SYS_ADMIN))
+-               return ERR_PTR(-EACCES);
++       // if (!task_no_new_privs(current) &amp;&amp;
++       //              !ns_capable_noaudit(current_user_ns(), CAP_SYS_ADMIN))
++       //      return ERR_PTR(-EACCES);
+
+        /* Allocate a new seccomp_filter */
+        sfilter = kzalloc(sizeof(*sfilter), GFP_KERNEL | __GFP_NOWARN);
+</code></pre></div></div>
+
+<p>In particular, look closely at these lines:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>* This avoids scenarios where unprivileged tasks can affect the
+* behavior of privileged children.
+*/
+-       if (!task_no_new_privs(current) &amp;&amp;
+-                       !ns_capable_noaudit(current_user_ns(), CAP_SYS_ADMIN))
+-               return ERR_PTR(-EACCES);
++       // if (!task_no_new_privs(current) &amp;&amp;
++       //              !ns_capable_noaudit(current_user_ns(), CAP_SYS_ADMIN))
++       //      return ERR_PTR(-EACCES);
+</code></pre></div></div>
+
+<p>It looks like before our kernel is compiled, the <code class="language-plaintext highlighter-rouge">patch</code> command is used comment some lines out, but what is the significance of these lines? Well, googling <code class="language-plaintext highlighter-rouge">test_no_new_privs()</code> the first result is <a href="http://bricktou.cn/include/linux/schedtask_no_new_privs_en.html">this</a>, here we can see a function prototype and a description for what purpose this has:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="n">bool</span> <span class="n">task_no_new_privs</span><span class="p">(</span><span class="k">struct</span> <span class="n">task_struct</span> <span class="o">*</span><span class="n">p</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>The description states: <code class="language-plaintext highlighter-rouge">Determine whether a bit is set</code>. Of course this makes sense given the function returns a Boolean. Now lets look at the implementation. The latter also links to a source snipped, however our kernel version is different, so we can look <a href="https://elixir.bootlin.com/linux/v5.12.14/source/include/linux/sched.h#L1646">here</a> instead:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/* Per-process atomic flags. */</span>
+<span class="cp">#define PFA_NO_NEW_PRIVS		0	</span><span class="cm">/* May not gain new privileges. */</span><span class="cp">
+#define PFA_SPREAD_PAGE			1	</span><span class="cm">/* Spread page cache over cpuset */</span><span class="cp">
+#define PFA_SPREAD_SLAB			2	</span><span class="cm">/* Spread some slab caches over cpuset */</span><span class="cp">
+#define PFA_SPEC_SSB_DISABLE		3	</span><span class="cm">/* Speculative Store Bypass disabled */</span><span class="cp">
+#define PFA_SPEC_SSB_FORCE_DISABLE	4	</span><span class="cm">/* Speculative Store Bypass force disabled*/</span><span class="cp">
+#define PFA_SPEC_IB_DISABLE		5	</span><span class="cm">/* Indirect branch speculation restricted */</span><span class="cp">
+#define PFA_SPEC_IB_FORCE_DISABLE	6	</span><span class="cm">/* Indirect branch speculation permanently restricted */</span><span class="cp">
+#define PFA_SPEC_SSB_NOEXEC		7	</span><span class="cm">/* Speculative Store Bypass clear on execve() */</span><span class="cp">
+</span>
+<span class="cp">#define TASK_PFA_TEST(name, func)					\
+	static inline bool task_##func(struct task_struct *p)		\
+	{ return test_bit(PFA_##name, &amp;p-&gt;atomic_flags); }
+</span>
+<span class="cp">#define TASK_PFA_SET(name, func)					\
+	static inline void task_set_##func(struct task_struct *p)	\
+	{ set_bit(PFA_##name, &amp;p-&gt;atomic_flags); }
+</span>
+<span class="cp">#define TASK_PFA_CLEAR(name, func)					\
+	static inline void task_clear_##func(struct task_struct *p)	\
+	{ clear_bit(PFA_##name, &amp;p-&gt;atomic_flags); }
+</span>
+<span class="n">TASK_PFA_TEST</span><span class="p">(</span><span class="n">NO_NEW_PRIVS</span><span class="p">,</span> <span class="n">no_new_privs</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>Specifically, the definition is on the last line. Doesn’t much look like a function definition, does it? But it gets a bit clearer when you look at the macro being used:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">#define TASK_PFA_TEST(name, func)                    \
+    static inline bool task_##func(struct task_struct *p)        \
+    { return test_bit(PFA_##name, &amp;p-&gt;atomic_flags); }
+</span></code></pre></div></div>
+
+<p>It takes a <code class="language-plaintext highlighter-rouge">name</code> and a <code class="language-plaintext highlighter-rouge">func</code>, then based on that will use even more macros to stitch together a function name, we pass in <code class="language-plaintext highlighter-rouge">NO_NEW_PRIVS</code> as our <code class="language-plaintext highlighter-rouge">name</code>, and <code class="language-plaintext highlighter-rouge">no_new_privs</code> as our <code class="language-plaintext highlighter-rouge">func</code>, and based on that it will give us a function name of <code class="language-plaintext highlighter-rouge">task_no_new_privs</code>.</p>
+
+<p>If we look inside the function, we can see that it is, in fact testing a bit. In this case <code class="language-plaintext highlighter-rouge">PFA_NO_NEW_PRIVS</code>, or ‘1’. So what is the purpose of this bit, exactly?</p>
+
+<p>Again, by googling we can find <a href="https://unix.stackexchange.com/questions/562260/why-we-need-to-set-no-new-privs-while-before-calling-seccomp-mode-filter">this</a> answer on stack overflow. The gist is:</p>
+
+<p>“The no_new_privs bit is a property of the process which, if set, tells the kernel to not employ privileges escalation mechanisms like SUID bit (so, invoking things like sudo(8) will not work at all), so it is safe to allow the unprivileged process with this bit set to use seccomp filters: this process will not have any possibility to escalate privileges even temporarily, thus, will not be able to “hijack” these privileges.”</p>
+
+<p><code class="language-plaintext highlighter-rouge">seccomp</code> has a lot of features, one of which is the ability to skip a syscall, and set an arbitrary <code class="language-plaintext highlighter-rouge">ERRNO</code>/return value from said syscall. Look at this code, taken from the answer:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// Make the `openat(2)` syscall always "succeed".</span>
+<span class="n">seccomp_rule_add</span><span class="p">(</span><span class="n">seccomp</span><span class="p">,</span> <span class="n">SCMP_ACT_ERRNO</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span> <span class="n">SCMP_SYS</span><span class="p">(</span><span class="n">openat</span><span class="p">),</span> <span class="mi">0</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>Once this rule is applied, the <code class="language-plaintext highlighter-rouge">openat</code> syscall will return ‘0’ regardless of whether the file in question actually exists. This means that checks in the program that expect a ‘-1’ on failure will be invalidated and depending on the depth of error checking may just assume the file exists, when it in fact does not.</p>
+
+<p>Now with that knowledge we can look back on the patched code from our kernel:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">-</span>       <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">task_no_new_privs</span><span class="p">(</span><span class="n">current</span><span class="p">)</span> <span class="o">&amp;&amp;</span>
+<span class="o">-</span>                       <span class="o">!</span><span class="n">ns_capable_noaudit</span><span class="p">(</span><span class="n">current_user_ns</span><span class="p">(),</span> <span class="n">CAP_SYS_ADMIN</span><span class="p">))</span>
+<span class="o">-</span>               <span class="k">return</span> <span class="nf">ERR_PTR</span><span class="p">(</span><span class="o">-</span><span class="n">EACCES</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>So, if the <code class="language-plaintext highlighter-rouge">no_new_privs</code> bit is NOT set (meaning the process to which the seccomp rule is being applied IS setuid/running under sudo) AND the current process was not started by root, <code class="language-plaintext highlighter-rouge">seccomp</code> will fail before loading the filter/rule, meaning that no meddling with the return value is possible where we may have something to gain from it.</p>
+
+<p>But now remember the patch:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">+</span>       <span class="c1">// if (!task_no_new_privs(current) &amp;&amp;</span>
+<span class="o">+</span>       <span class="c1">//              !ns_capable_noaudit(current_user_ns(), CAP_SYS_ADMIN))</span>
+<span class="o">+</span>       <span class="c1">//      return ERR_PTR(-EACCES);</span>
+</code></pre></div></div>
+
+<p>This has been undone. Any process, regardless of setuid status will have the rule applied. This will be incredibly important moving forward, so don’t forget :).</p>
+
+<h2 id="the-challenge">The challenge</h2>
+
+<p>Now that we have covered all that, we can get to the challenge sources. Lets first take a look at <code class="language-plaintext highlighter-rouge">jail.c</code>:</p>
+:ET

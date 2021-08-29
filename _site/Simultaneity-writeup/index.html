@@ -1,0 +1,280 @@
+<h1 id="intro">Intro</h1>
+<p>This years redpwn started on the 9th of july, and ran through from 8PM BST till 8PM on the 12th. This was really fun, and I really praise the organisers for creating the superb
+infrastructure and challenges that allowed me (and my <a href="https://ctftime.org/team/157675">team-mates</a> or <a href="https://ctftime.org/team/120331">here</a>) to toil away on these challenges. Cheers guys :).</p>
+
+<p>This will be the first of (probably) a series of writeups for challenges in the pwn category of redpwnCTF 2021, disregarding the challenges I didn’t solve.</p>
+
+<h2 id="description">Description</h2>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125520811-639fe7e9-d1bd-4897-93f3-a7670b54f4f8.png" alt="image" /></p>
+
+<p>This challenge specifically was extremely difficult (for me). The vulnerability as you will see is very obvious. However exploitation is another matter that 
+requires knowledge of some heap internals, and alot of guesswork on my part. With that out of the way, lets begin.</p>
+
+<p>(The solution script is at the bottom as well as in the github folder, I forgot that in my last writeup.)</p>
+
+<h1 id="setup">Setup</h1>
+
+<p>So whats up?</p>
+
+<p>Well first things first, were provided with a libc and a linker. If we want to correctly emulate the challenge environment, we need to patch these into the program. You can
+do that like so:</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code>patchelf ./simultaneity <span class="nt">--set-interpreter</span> ./ld-linux-x86-64.so.2 <span class="nt">--replace-needed</span> libc.so.6 ./libc.so.6 <span class="nt">--output</span> simultaneity1
+</code></pre></div></div>
+<p>Now you should have <code class="language-plaintext highlighter-rouge">simultaneity1</code> which has the correct libc + linker. Something else to note is that the libc is stripped. There are quite a few ways to ‘unstrip’ a libc but 
+I chose to download the debug symbols and simply use them with my gdb. To do this you can download the debug symbols that match the libc (you can get version info from a libc 
+by running it), then extract them in the current
+directory:</p>
+
+<div class="language-sh highlighter-rouge"><div class="highlight"><pre class="highlight"><code>wget http://ftp.de.debian.org/debian/pool/main/g/glibc/libc6-dbg_2.28-10_amd64.deb
+<span class="nb">mkdir </span>dbg<span class="p">;</span> dpkg <span class="nt">-x</span> libc6-dbg_2.28-10_amd64.deb ./dbg/
+</code></pre></div></div>
+<p>Now whenever you want to use these symbols in gdb, simply type: <code class="language-plaintext highlighter-rouge">set debug-file-directory dbg/usr/lib/debug/</code> and you should (fingers crossed) have working symbols.
+Now we should be all set to take a look at the binary.</p>
+
+<h1 id="the-program">The program</h1>
+
+<p>Its pretty simple:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125348293-f066ed00-e353-11eb-835e-65cd30359f54.PNG" alt="1" /></p>
+
+<p>The program asks <code class="language-plaintext highlighter-rouge">how big?</code> and we can provide a size, it then spits out what looks like a <code class="language-plaintext highlighter-rouge">main_arena</code> heap address (from a heap that is aligned with the data segment). It then
+asks <code class="language-plaintext highlighter-rouge">how far?</code> and <code class="language-plaintext highlighter-rouge">what?</code>. It seems that the program is straight up giving us a thinly veiled write-what-where primitive, nice.</p>
+
+<p>If we look at the decompiled code for <code class="language-plaintext highlighter-rouge">main()</code> we can confirm this:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125348373-0aa0cb00-e354-11eb-89cc-5d2b3830c34f.png" alt="image" /></p>
+
+<p>(ignore my mutterings at the bottom lol)
+The program takes a <code class="language-plaintext highlighter-rouge">size</code> which is then passed to <code class="language-plaintext highlighter-rouge">malloc(size)</code> so we can control the size of an allocation. Then the program leaks the address of said allocation back to 
+us. We can then specify another <code class="language-plaintext highlighter-rouge">size</code>/index that will then be multiplied by 8, then it will be added to the address of our allocation <code class="language-plaintext highlighter-rouge">(long)alloc + size * 8)</code>. We then use 
+the result of this addition and write into it an <code class="language-plaintext highlighter-rouge">unsigned int</code>/<code class="language-plaintext highlighter-rouge">size_t</code>.</p>
+
+<p>Another cool thing about this (other than being given an extremely powerful exploit primitive) is that because the <code class="language-plaintext highlighter-rouge">how far?</code> part of the program takes a regular integer 
+via <code class="language-plaintext highlighter-rouge">__isoc99_scanf("%ld", &amp;size)</code> we can have a negative <code class="language-plaintext highlighter-rouge">size</code>/index. This, in turn means that we can not only write anywhere after our allocation, but also before.</p>
+
+<h1 id="approaches">Approaches</h1>
+
+<p>Now i’ll talk about the approach I tried initially. My first thought was, could we overwrite some interesting stuff on the heap? Maybe one of functions left something there?
+However further inspection on the heap revealed that its just a barren wasteland.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>pwndbg&gt; heap
+Allocated chunk | PREV_INUSE
+Addr: 0x55555555a000
+Size: 0x251 &lt;------------------+
+                               |
+Allocated chunk | PREV_INUSE   +------------ Metadata :yawn:
+Addr: 0x55555555a250
+Size: 0x411 &lt;------------------ scanf()'s allocation to store our input in full
+                              
+Allocated chunk | PREV_INUSE   +------------ Our allocation
+Addr: 0x55555555a660           |
+Size: 0x21 &lt;-------------------+
+
+Top chunk | PREV_INUSE
+Addr: 0x55555555a680
+Size: 0x20981
+
+</code></pre></div></div>
+
+<p>Nothing interesting here, and nothing that could be easily exploited; i thought perhaps through some manipulation of the <code class="language-plaintext highlighter-rouge">top</code> we could allocate a chunk, perhaps with <code class="language-plaintext highlighter-rouge">scanf</code> 
+(yes, <code class="language-plaintext highlighter-rouge">scanf</code> does this) somewhere it isn’t meant to be? As it turns out, <code class="language-plaintext highlighter-rouge">scanf</code> will allocate the temporary buffer before it recieves our input+writes it, so sadly there is
+no meddling we can do here, as no further allocations are made/free’d. Although under certain circumstances <code class="language-plaintext highlighter-rouge">scanf()</code> will <code class="language-plaintext highlighter-rouge">free()</code> the temporary buffer, so perhaps some 
+opportunity exists there? I didn’t think about this too much, though.</p>
+
+<p>I was quickly drawn to another idea. Whats in the <code class="language-plaintext highlighter-rouge">.bss</code> atm?</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125352528-4b4f1300-e359-11eb-9d8d-581a4a75cda4.png" alt="image" /></p>
+
+<p>Not much, as you can see (and definitely nothing useful). My idea here was to overwrite some stuff and see what happened, did changing any of this stuff have any impact?
+Sadly no. I was quite confident that modifying the <code class="language-plaintext highlighter-rouge">stdout@GLIBC</code> would have some effect, as the <code class="language-plaintext highlighter-rouge">FILE</code> struct is pretty complicated. But it was to no avail.</p>
+
+<p>So we have a seemingly hopeless situation where we have very little, if any opportunity to overwrite anything; we have a (basically useless) <code class="language-plaintext highlighter-rouge">.text</code>/heap leak and no (reliable)
+way to overwrite anything meaningful.</p>
+
+<p>It was at this point where I became stuck for quite a while, and moved on to <code class="language-plaintext highlighter-rouge">image-identifier</code>. Only after finishing that and coming back did I realise what I had missed, on
+the last day of the CTF.</p>
+
+<h1 id="gaining-a-rather-strong-foothold">Gaining a (rather strong) foothold</h1>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125354078-468b5e80-e35b-11eb-9eba-c21095da46e7.png" alt="image" /></p>
+
+<p>I highlighted the important part. I neglected to fully consider the ability we have when controlling the size of an allocation. If we wanted, we could make <code class="language-plaintext highlighter-rouge">malloc()</code> fail and 
+return a null pointer, but more importantly if an allocation is larger than the <code class="language-plaintext highlighter-rouge">top</code> chunk (aka, does not fit in the current heap) <code class="language-plaintext highlighter-rouge">malloc()</code> will use <code class="language-plaintext highlighter-rouge">mmap()</code> to allocate
+some memory that fits the size of said allocation (if it can provide enough memory, that is).</p>
+
+<p>If we, for example allocate a chunk that is 1 larger that <code class="language-plaintext highlighter-rouge">top</code> (0x209a1+1) then we should be able to force <code class="language-plaintext highlighter-rouge">malloc()</code> to make our heap elsewhere. And sure enough:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125355878-6cb1fe00-e35d-11eb-8713-56e09c21ca91.png" alt="image" /></p>
+
+<p>Yep, the entire allocation has moved elsewhere. But where exactly?</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125355554-1644bf80-e35d-11eb-815f-2b095fd3f45e.png" alt="image" /></p>
+
+<p>Our allocation is between the main heap and libc (<code class="language-plaintext highlighter-rouge">0x7ffff7deb000-0x7ffff7e0c000</code>). The most important aspect of this is that there is no flux/influence of ASLR between our heap
+and all of libc. This means:</p>
+
+<ul>
+  <li>Since our heap is at a constant offset from libc, so is our leaked allocation address. We now have an easy way to get the base, and therefore the rest of libc.</li>
+  <li>As stated in the above, our allocation is at a constant offset from libc, this means that we may use our primitive to write INTO libc, anywhere we want.</li>
+</ul>
+
+<p>Now that we have easy access to libc, we need a place to write. I tried a couple things here; none of which worked, however overwriting <code class="language-plaintext highlighter-rouge">__free_hook</code> did.</p>
+
+<p><code class="language-plaintext highlighter-rouge">__free_hook</code> is a global function pointer in libc that when NULL does nothing however when populated with any values, upon <code class="language-plaintext highlighter-rouge">free()</code> it will detect that the pointer is not 
+NULL and instead jump to it. This makes it ideal, as <code class="language-plaintext highlighter-rouge">free()</code>, and therefore <code class="language-plaintext highlighter-rouge">__free_hook</code> are used alot more than you would expect, and so there are alot of opportunities for 
+RCE with this value. Hooks like this also exist for <code class="language-plaintext highlighter-rouge">malloc()</code> and <code class="language-plaintext highlighter-rouge">realloc()</code> functions, making it an extremely easy way to execute a one-gadget in a pinch.</p>
+
+<p>We can work out the difference of <code class="language-plaintext highlighter-rouge">__free_hook</code> from our allocation, then divide that by 8, ensuring that when it eventually gets multiplied by 8 in our 
+<code class="language-plaintext highlighter-rouge">scanf("%zu",(void *)((long)alloc + size * 8)))</code> we still come out with the same value:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125357942-3629b280-e360-11eb-88c3-1abc4c729304.png" alt="image" /></p>
+
+<p>We can then do a test run in gdb to make sure we are in fact writing to the correct location</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125358108-68d3ab00-e360-11eb-88bb-badc3cfdbbcb.png" alt="image" /></p>
+
+<p>And sure enough, yes.</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125358179-7f7a0200-e360-11eb-865f-bcc35d4836cc.png" alt="image" /></p>
+
+<p>We can see that we do write to <code class="language-plaintext highlighter-rouge">__free_hook</code>. However on entering a random value you’ll notice that we do not SEGFAULT before the <code class="language-plaintext highlighter-rouge">_exit()</code></p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125358554-f44d3c00-e360-11eb-91f0-1ebd8d089d9f.png" alt="image" /></p>
+
+<p>This can mean only one thing; our input is never allocated / is never <code class="language-plaintext highlighter-rouge">free()</code>‘d</p>
+
+<h1 id="some-scanf-stuff">Some scanf stuff</h1>
+
+<p>Since <code class="language-plaintext highlighter-rouge">scanf()</code> takes no <code class="language-plaintext highlighter-rouge">length</code> field, for all user input, even the stuff it doesnt care about (wrong format, wrong type, etc…) it has to take + store somehow. To do this
+it uses a ‘scratch’-buffer. This is a buffer that will store ALL the input from <code class="language-plaintext highlighter-rouge">scanf()</code>. This starts as a stack buffer, however will fallback to being a heap buffer if this 
+stack buffer threatens to overflow:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="o">/*</span> <span class="n">Scratch</span> <span class="n">buffers</span> <span class="n">with</span> <span class="n">a</span> <span class="k">default</span> <span class="n">stack</span> <span class="n">allocation</span> <span class="n">and</span> <span class="n">fallback</span> <span class="n">to</span>
+   <span class="n">heap</span> <span class="n">allocation</span><span class="p">.</span> <span class="p">[</span><span class="o">---</span><span class="n">snipped</span><span class="o">---</span><span class="p">]</span>
+</code></pre></div></div>
+<p><a href="https://elixir.bootlin.com/glibc/glibc-2.28.9000/source/include/scratch_buffer.h#L22">here</a></p>
+
+<p>This heap buffer is re-used whenever another call to <code class="language-plaintext highlighter-rouge">scanf()</code> comes via rewinding the buffer position back to the start, such that the space can be re-used:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/* Reinitializes BUFFER-&gt;current and BUFFER-&gt;end to cover the entire
+   scratch buffer.  */</span>
+<span class="k">static</span> <span class="kr">inline</span> <span class="kt">void</span>
+<span class="nf">char_buffer_rewind</span> <span class="p">(</span><span class="k">struct</span> <span class="n">char_buffer</span> <span class="o">*</span><span class="n">buffer</span><span class="p">)</span>
+<span class="p">{</span>
+  <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">current</span> <span class="o">=</span> <span class="n">char_buffer_start</span> <span class="p">(</span><span class="n">buffer</span><span class="p">);</span>
+  <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">end</span> <span class="o">=</span> <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">current</span> <span class="o">+</span> <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">scratch</span><span class="p">.</span><span class="n">length</span> <span class="o">/</span> <span class="k">sizeof</span> <span class="p">(</span><span class="n">CHAR_T</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+<p><a href="https://elixir.bootlin.com/glibc/glibc-2.28.9000/source/stdio-common/vfscanf.c#L216">here</a> and <a href="https://elixir.bootlin.com/glibc/glibc-2.28.9000/source/stdio-common/vfscanf.c#L483">here</a></p>
+
+<p>Whenever we want to add to this buffer, we need to call <code class="language-plaintext highlighter-rouge">char_buffer_add()</code>. This does a couple things. 1st it checks if we currently positioned at the end of our buffer, and 
+if so it will take a ‘slow’ path. Otherwise it just adds a single character to the scratch buffer and moves on:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kr">inline</span> <span class="kt">void</span>
+<span class="nf">char_buffer_add</span> <span class="p">(</span><span class="k">struct</span> <span class="n">char_buffer</span> <span class="o">*</span><span class="n">buffer</span><span class="p">,</span> <span class="n">CHAR_T</span> <span class="n">ch</span><span class="p">)</span>
+<span class="p">{</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">__glibc_unlikely</span> <span class="p">(</span><span class="n">buffer</span><span class="o">-&gt;</span><span class="n">current</span> <span class="o">==</span> <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">end</span><span class="p">))</span>
+    <span class="n">char_buffer_add_slow</span> <span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="n">ch</span><span class="p">);</span>
+  <span class="k">else</span>
+    <span class="o">*</span><span class="n">buffer</span><span class="o">-&gt;</span><span class="n">current</span><span class="o">++</span> <span class="o">=</span> <span class="n">ch</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+<p><a href="https://elixir.bootlin.com/glibc/glibc-2.28.9000/source/stdio-common/vfscanf.c#L256">here</a></p>
+
+<p>As you would expect, the slow path is for when we run out of space in our stack buffer, (or our heap buffer) and will move our input in its entirety to the heap when the 
+conditions are right</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cm">/* Slow path for char_buffer_add.  */</span>
+<span class="k">static</span> <span class="kt">void</span>
+<span class="nf">char_buffer_add_slow</span> <span class="p">(</span><span class="k">struct</span> <span class="n">char_buffer</span> <span class="o">*</span><span class="n">buffer</span><span class="p">,</span> <span class="n">CHAR_T</span> <span class="n">ch</span><span class="p">)</span>
+<span class="p">{</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">char_buffer_error</span> <span class="p">(</span><span class="n">buffer</span><span class="p">))</span>
+    <span class="k">return</span><span class="p">;</span>
+  <span class="kt">size_t</span> <span class="n">offset</span> <span class="o">=</span> <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">end</span> <span class="o">-</span> <span class="p">(</span><span class="n">CHAR_T</span> <span class="o">*</span><span class="p">)</span> <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">scratch</span><span class="p">.</span><span class="n">data</span><span class="p">;</span>
+  <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">scratch_buffer_grow_preserve</span> <span class="p">(</span><span class="o">&amp;</span><span class="n">buffer</span><span class="o">-&gt;</span><span class="n">scratch</span><span class="p">))</span> <span class="c1">// &lt;--------- important part is here</span>
+    <span class="p">{</span>
+      <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">current</span> <span class="o">=</span> <span class="nb">NULL</span><span class="p">;</span>
+      <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">end</span> <span class="o">=</span> <span class="nb">NULL</span><span class="p">;</span>
+      <span class="k">return</span><span class="p">;</span>
+    <span class="p">}</span>
+  <span class="n">char_buffer_rewind</span> <span class="p">(</span><span class="n">buffer</span><span class="p">);</span>
+  <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">current</span> <span class="o">+=</span> <span class="n">offset</span><span class="p">;</span>
+  <span class="o">*</span><span class="n">buffer</span><span class="o">-&gt;</span><span class="n">current</span><span class="o">++</span> <span class="o">=</span> <span class="n">ch</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>If we delve a bit deeper we can actually find where exactly this allocation happens:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">bool</span>
+<span class="nf">__libc_scratch_buffer_grow_preserve</span> <span class="p">(</span><span class="k">struct</span> <span class="n">scratch_buffer</span> <span class="o">*</span><span class="n">buffer</span><span class="p">)</span>
+<span class="p">{</span>
+  <span class="kt">size_t</span> <span class="n">new_length</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">length</span><span class="p">;</span>
+  <span class="kt">void</span> <span class="o">*</span><span class="n">new_ptr</span><span class="p">;</span>
+
+  <span class="k">if</span> <span class="p">(</span><span class="n">buffer</span><span class="o">-&gt;</span><span class="n">data</span> <span class="o">==</span> <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">__space</span><span class="p">.</span><span class="n">__c</span><span class="p">)</span> <span class="c1">// If we are currently using the __space.__c buffer (stack buffer). This is the default for all inputs, initially.</span>
+    <span class="p">{</span>
+      <span class="cm">/* Move buffer to the heap.  No overflow is possible because
+	 buffer-&gt;length describes a small buffer on the stack.  */</span>
+      <span class="n">new_ptr</span> <span class="o">=</span> <span class="n">malloc</span> <span class="p">(</span><span class="n">new_length</span><span class="p">);</span>
+      <span class="k">if</span> <span class="p">(</span><span class="n">new_ptr</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">)</span>
+	      <span class="k">return</span> <span class="nb">false</span><span class="p">;</span>
+      <span class="n">memcpy</span> <span class="p">(</span><span class="n">new_ptr</span><span class="p">,</span> <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">__space</span><span class="p">.</span><span class="n">__c</span><span class="p">,</span> <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">length</span><span class="p">);</span> <span class="c1">// heres the 'move'</span>
+<span class="c1">// [---snipped---]</span>
+      <span class="cm">/* Install new heap-based buffer.  */</span>
+  <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">data</span> <span class="o">=</span> <span class="n">new_ptr</span><span class="p">;</span>
+  <span class="n">buffer</span><span class="o">-&gt;</span><span class="n">length</span> <span class="o">=</span> <span class="n">new_length</span><span class="p">;</span>
+  <span class="k">return</span> <span class="nb">true</span><span class="p">;</span>
+</code></pre></div></div>
+
+<p><code class="language-plaintext highlighter-rouge">buffer-&gt;data</code> is where we write into the scratch buffer - at least the origin, anyway.</p>
+
+<p>From this we can understand that if we provide enough input - enough that we can progress the <code class="language-plaintext highlighter-rouge">buffer-&gt;current</code> to the <code class="language-plaintext highlighter-rouge">buffer-&gt;end</code> of the current buffer , we can 
+trigger a new allocation with <code class="language-plaintext highlighter-rouge">malloc()</code>. This has some caveats though; if <code class="language-plaintext highlighter-rouge">scanf()</code> expects a number (like with our <code class="language-plaintext highlighter-rouge">__isoc99_scanf("%zu...</code>) it will only progress the 
+<code class="language-plaintext highlighter-rouge">buffer-&gt;current</code> if it recieves a digit. You can read the source here <a href="https://elixir.bootlin.com/glibc/glibc-2.28.9000/source/stdio-common/vfscanf.c#L1396">here</a>.</p>
+
+<p>One thing I want to draw your attention to though, is this:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>	<span class="k">while</span> <span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+	<span class="p">{</span>
+<span class="c1">// [---snipped---]</span>
+	  <span class="k">if</span> <span class="p">(</span><span class="n">ISDIGIT</span> <span class="p">(</span><span class="n">c</span><span class="p">))</span>
+		<span class="p">{</span>
+		  <span class="n">char_buffer_add</span> <span class="p">(</span><span class="o">&amp;</span><span class="n">charbuf</span><span class="p">,</span> <span class="n">c</span><span class="p">);</span>
+		  <span class="n">got_digit</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+		<span class="p">}</span>
+<span class="c1">// [---snipped---]</span>
+</code></pre></div></div>
+
+<p>What we have here, is what I assume to be the loop that goes through the values of each number, after the format string has been interpreted (but you can never be sure with libc 
+code). As you can see, if our character is a digit, we add it to the buffer. Cool.</p>
+
+<p>Now armed with this (somewhat useless) knowledge, we can go back and try writing to <code class="language-plaintext highlighter-rouge">__free_hook</code> again, but this time with at least 1024 bytes of digits in our buffer
+in order to allocate a chunk that will be free’d on exiting <code class="language-plaintext highlighter-rouge">scanf()</code> (via <code class="language-plaintext highlighter-rouge">scratch_buffer_free()</code>) And sure enough if we spam ‘0’s, we can call <code class="language-plaintext highlighter-rouge">free()</code> on our allocation and thus trigger 
+<code class="language-plaintext highlighter-rouge">__free_hook</code>:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125519774-a9246a30-4760-4c5f-8cfa-7482964f23be.png" alt="image" /></p>
+
+<p>Now when we test in gdb:</p>
+
+<p><img src="https://user-images.githubusercontent.com/73792438/125519937-eb6b539a-c8f9-4c18-acc3-2ae774ccb9d6.png" alt="image" /></p>
+
+<p>Boom.</p>
+
+<p>Its worth noting that using any digit other than ‘0’ will (stating the obvious a bit here) cause the value to wrap around and become <code class="language-plaintext highlighter-rouge">0xffffffffffffffff</code>. But leading
+with ‘0’s ensures that the value written is not changed (I got confused with this for a while lol).</p>
+
+<h1 id="exploitation">Exploitation</h1>
+
+<p>Now that we have an RIP overwrite with a value we completely control AND a libc leak, the next logical step was finding an applicable <code class="language-plaintext highlighter-rouge">one_gadget</code> we can use. Running
+<code class="language-plaintext highlighter-rouge">one_gadget</code> on our libc provides 3 results. The one that works is:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>0x448a3 execve("/bin/sh", rsp+0x30, environ)
+constraints:
+  [rsp+0x30] == NULL
+</code></pre></div></div>
+
+<p>Now with that out of the way, things should be pretty EZ. Exploit is in the folder.
+HTP.</p>
+
