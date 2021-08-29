@@ -1,6 +1,5 @@
 ---
 title:  "TamuCTF 21 Calculator writeup"
-mathjax: true
 layout: post
 categories: media
 ---
