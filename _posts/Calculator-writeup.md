@@ -1,3 +1,10 @@
+---
+title:  "TamuCTF 21 Calculator writeup"
+mathjax: true
+layout: post
+categories: media
+---
+
 [TamuCTF](https://tamuctf.com) Started last thursday, and took place over 3 days, ending on the 25th (Sunday). The CTF had many different categories, however since I only know (a little bit) pwn I found myself focusing on exclusively those challenges. Of those I managed to solve 8 out of the 11 available. One of these challenges was called **Calculator**.
 ## What is it?
 When doing CTF challenges/Attacking real targets, people generally say the first step you need to take is to understand the general functionality of the program, then you can understand where vulnerabilities *could* be found, so lets take a look:
