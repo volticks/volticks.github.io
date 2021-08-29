@@ -87,7 +87,7 @@ All it does is iterate through the `instructions` heap memory, dereferencing any
 One of the hallmarks of a JIT compiler is that some language (such as python or javascript) is converted into Byte-code, and then that bytecode is then fed into an interpreter such as the python interpreter that then converts that bytecode into machine code and executes it. This program does implement JIT, although it takes out the bytecode and instead just converts our commands into machine code, lets take a look: 
 (The function is too big for a screenshot so I will paste the decompiled code here)
 
-```c
+{% highlight c %}
 
 void jit(void)
 
@@ -176,7 +176,7 @@ void jit(void)
   return;
 }
 
-```
+{{ "{% endhighlight " }}%}
 
 So... Where to start? Well first we are prompted to enter "How many instructions would you like to skip?". Our input is then converted to a float (keep note of this, as it will be extremely important later on) and stored, and then multiplied by 13. Now the program calculates how long our code will need to be with `size_of_code = instruction_count * 0xd + 4;` we then call `mmap()` with this value as the length argument and attempt to map that amount of memory from the address `0x100000` (this is static, and never changes). When that the memory is mapped we call `mprotect()` and set it to be readable, writable, and executable. 
 
@@ -261,11 +261,12 @@ Looking at the register state we see that:
 
 So we need a snippet of asm that can clear rdi, swap rsi and rdi, and `syscall` that 8 bytes or less. I came up with the following, and packed it as a number:
 
-```asm
+{% highlight asm %}
   xor rdi, rdi
   xchg rsi, rdx
   syscall
-```
+{{ "{% endhighlight " }}%}
+  
 `\x48\x31\xff\x48\x87\xd6\x0f\x05` == 364776757699490120
 
 This should be able to call `read()` with an unlimited size to write/read in data from stdin, we can test this:
