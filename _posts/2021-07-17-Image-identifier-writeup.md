@@ -1,3 +1,9 @@
+---
+title:  "Redpwn CTF 2021 Image-Identifier writeup"
+layout: post
+categories: media
+---
+
 # Intro
 
 Heres the second one. 

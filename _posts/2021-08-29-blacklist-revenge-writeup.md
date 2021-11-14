@@ -1,3 +1,9 @@
+---
+title:  "fword CTF 2021 Blacklist Revenge writeup"
+layout: post
+categories: media
+---
+
 # Intro
 
 ## Chit-chat

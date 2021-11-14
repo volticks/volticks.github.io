@@ -1,3 +1,9 @@
+---
+title:  "UIUCTF 2021 Insecure-Seccomp writeup"
+layout: post
+categories: media
+---
+
 # Intro
 
 This writeup is pretty late, given that [UIUCTC 21](https://ctftime.org/event/1372) ended a good few days ago, but now its here.

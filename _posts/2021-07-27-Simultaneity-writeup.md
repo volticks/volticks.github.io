@@ -1,3 +1,9 @@
+---
+title:  "Redpwn CTF 2021 Simultaneity writeup"
+layout: post
+categories: media
+---
+
 # Intro
 This years redpwn started on the 9th of july, and ran through from 8PM BST till 8PM on the 12th. This was really fun, and I really praise the organisers for creating the superb
 infrastructure and challenges that allowed me (and my [team-mates](https://ctftime.org/team/157675) or [here](https://ctftime.org/team/120331)) to toil away on these challenges. Cheers guys :).
