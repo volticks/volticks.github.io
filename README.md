@@ -16,6 +16,6 @@ Currently I'm playing CTF with [Zh3r0](https://ctftime.org/team/116018) where I 
 
 # Contact me
 
-You can contact me via [email](mailto:volticks@gmail.com) or over discord: volticks#4677.
+You can contact me via [email](mailto:volticks@gmail.com).
 
 ## EOF
